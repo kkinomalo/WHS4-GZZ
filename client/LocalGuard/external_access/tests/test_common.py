@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -44,6 +45,29 @@ class ArtifactInspectorTests(unittest.TestCase):
         self.assertNotEqual(first.sha256, second.sha256)
         self.assertEqual(calls, 2)
 
+    def test_same_size_replacement_with_restored_mtime_invalidates_cache(self):
+        calls = 0
+        def reader(_):
+            nonlocal calls
+            calls += 1
+            return "trusted", "CN=Test"
+        with tempfile.TemporaryDirectory() as directory:
+            artifact = Path(directory) / "sample.dll"
+            artifact.write_bytes(b"AAAA")
+            original_stat = artifact.stat()
+            cache = ArtifactCache(ArtifactInspector(reader))
+            first = cache.inspect(artifact)
+
+            artifact.write_bytes(b"BBBB")
+            os.utime(
+                artifact,
+                ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns),
+            )
+            second = cache.inspect(artifact)
+
+        self.assertNotEqual(first.sha256, second.sha256)
+        self.assertEqual(calls, 2)
+
 
 class ProcessLocatorTests(unittest.TestCase):
     def test_finds_game_and_detects_restart(self):
@@ -53,6 +77,28 @@ class ProcessLocatorTests(unittest.TestCase):
         self.assertEqual(locator.find(), original)
         self.assertTrue(locator.was_restarted(original, restarted))
         self.assertFalse(locator.was_restarted(original, original))
+
+    def test_strict_locator_rejects_ambiguous_same_name_processes(self):
+        first = TargetProcess(10, "game.exe", None, 100.0)
+        second = TargetProcess(11, "GAME.EXE", None, 101.0)
+        locator = ProcessLocator(
+            "game.exe",
+            lambda: [first, second],
+            require_unique=True,
+        )
+        with self.assertRaises(OSError):
+            locator.find()
+
+    def test_expected_pid_selects_launcher_supplied_process(self):
+        first = TargetProcess(10, "game.exe", None, 100.0)
+        second = TargetProcess(11, "GAME.EXE", None, 101.0)
+        locator = ProcessLocator(
+            "game.exe",
+            lambda: [first, second],
+            expected_pid=11,
+            require_unique=True,
+        )
+        self.assertEqual(locator.find(), second)
 
 
 class DetectionResultTests(unittest.TestCase):

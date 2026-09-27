@@ -5,10 +5,11 @@ from .artifact_inspector import ArtifactInspector
 from .detection_result import build_detection_result, validate_detection_result
 from .jsonl_writer import append_detection_jsonl
 from .models import ArtifactInfo, FileFingerprint, TargetProcess
-from .process_locator import ProcessLocator, describe_process
+from .process_locator import AmbiguousTargetProcessError, ProcessLocator, describe_process
 
 __all__ = [
     "ArtifactCache", "ArtifactInfo", "ArtifactInspector", "FileFingerprint",
-    "ProcessLocator", "TargetProcess", "append_detection_jsonl", "describe_process",
+    "AmbiguousTargetProcessError", "ProcessLocator", "TargetProcess",
+    "append_detection_jsonl", "describe_process",
     "build_detection_result", "validate_detection_result",
 ]

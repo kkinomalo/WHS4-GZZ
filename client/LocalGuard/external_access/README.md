@@ -13,7 +13,7 @@ external_access/
 │  ├─ artifact_inspector.py  # SHA-256·Authenticode·게시자 조회
 │  └─ artifact_cache.py      # 파일이 안 바뀌었으면 검사 결과 재사용
 ├─ process_access/           # 위험한 게임 프로세스 핸들 관찰·점수화·JSONL 기록
-├─ module_integrity/         # DLL 기준선·변화 탐지 (다음 단계)
+├─ module_integrity/         # DLL 기준선·변화·신뢰 정보 탐지
 └─ tests/
 ```
 
@@ -23,9 +23,12 @@ external_access/
 {
     "session_id": "session_20260915_001",
     "player_id": "player_042",
-    "module": "external_access",
+    "module": "localguard",
     "timestamp_ms": 507000,
-    "evidence": {"access_mask": "PROCESS_VM_WRITE"},
+    "evidence": {
+        "submodule": "external_process",
+        "access_mask": "PROCESS_VM_WRITE"
+    },
     "reasons": ["Untrusted process has VM_WRITE access to the game"],
     "raw_score": 3,
 }
@@ -36,10 +39,11 @@ external_access/
 
 ## 테스트
 
-저장소 루트에서 실행한다.
+저장소 루트에서 실행한다. 아래 명령은 공통, process_access,
+module_integrity 테스트를 모두 찾는다.
 
 ```powershell
-py -3 -m unittest discover -s client/LocalGuard/external_access/tests -t . -v
+py -3 -m unittest discover -s client/LocalGuard/external_access -t . -v
 ```
 
 단위 테스트는 SHA-256, 캐시 무효화, 게임 PID 재시작 식별, JSONL 출력,
@@ -58,6 +62,28 @@ py -3 -m client.LocalGuard.external_access.process_access.runner --game-exe Peng
 반복 관찰은 `--once`를 빼고 실행한다. 위험 권한이 발견됐을 때만 기본 경로
 `logs/external_access.jsonl`에 결과 한 줄이 기록된다. 이 모듈은 차단·종료·전송을
 하지 않는다.
+
+## 게임 내부 모듈 무결성 실행
+
+LocalGuard를 게임보다 먼저 실행한 뒤 64비트 Python에서 아래처럼 실행한다.
+
+```powershell
+py -3 -m client.LocalGuard.external_access.module_integrity.runner --game-exe PenguinHotel-Win64-Shipping.exe --session-id normal_001 --player-id player_042
+```
+
+첫 성공 스냅샷은 DLL 비교 기준선만 만들고 탐지 이벤트를 내지 않는다. 이후 새로
+추가되거나 같은 경로에서 매핑 정보가 바뀐 DLL만 검사한다. DLL 파일의 SHA-256,
+Authenticode 서명, 게시자를 공통 캐시로 조회하고, 정확한 이름+SHA-256 및 선택적인
+경로·서명·게시자 조건이 모두 일치한 allowlist 항목만 제외한다. 결과 기본 경로는
+`logs/module_integrity.jsonl`이다.
+
+초기 점수는 새 DLL `+1`, 같은 경로의 매핑 정보 변경 `+1`, 미서명 `+1`, 유효하지
+않은 서명 `+2`이다. 서명 조회 실패는 수집 한계일 수 있으므로 추가 점수를 주지 않는다.
+이 값은 최종 밴 점수가 아니라 ReplayAnalyzer에서 조정할 원시 근거 점수다.
+
+상세 구조와 한계는 [`module_integrity/README.md`](module_integrity/README.md)에,
+발표용 평문은 [`module_integrity/STRUCTURE_PRESENTATION.txt`](module_integrity/STRUCTURE_PRESENTATION.txt)에
+정리했다.
 
 초기 점수 정책은 `PROCESS_VM_WRITE=2`, `PROCESS_VM_OPERATION=2`,
 `PROCESS_CREATE_THREAD=3`이다. 미서명 또는 조회 불가 서명은 위험 handle과 결합할
