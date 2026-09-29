@@ -171,18 +171,10 @@ py -3 -m client.LocalGuard.external_access.module_integrity.runner `
 기본 3초 폴링 주기의 두 배인 6초 이상 로드 상태를 유지한다. 첫 PowerShell에는
 `added=1` 이상과 `emitted=1` 이상이 출력되어야 한다.
 
-이 저장소의 통합 도구를 실제 시나리오로 시험할 때는 두 번째 관리자 PowerShell에서
-다음처럼 실행한다.
-
-```powershell
-cd "C:\Users\nojiw\Downloads\WHS4-GZZ-module-integrity\integration\meccha-tools-ui"
-python -m meccha_chameleon_tools.launcher
-```
-
-UI의 `ESP Enabled`는 외부 오버레이이므로 그것만 켜서는 DLL 추가가 발생하지 않는다.
-`CAMOUFLAGE` 화면의 `Review` 또는 `Start Painting`은 `ensure_bridge_ready()`를 호출하고,
-검토된 `runtime-bridge.dll`을 게임 프로세스에 로드하므로 `module_integrity` 양성 시험이
-된다. 게임 효과를 실행하지 않고 통합 bridge 로드 경로만 확인하려면 UI 대신 아래 명령을
+`integration/meccha-tools-ui`의 `launcher`와 `Apply Selected (Test)`는 모듈 상태만
+시뮬레이션하며 실제 `esp.py` 실행이나 DLL 주입을 수행하지 않는다. 따라서 이 화면은
+실제 양성 시험에 사용하지 않는다. 통합 bridge 코드 경로만 직접 확인하려면, 승인된
+`runtime-injector.exe`가 보안 제품에 격리되지 않은 통제된 시험 환경에서만 아래 명령을
 사용한다.
 
 ```powershell
@@ -192,6 +184,8 @@ python -c "from meccha_chameleon_tools.camouflage import ensure_bridge_ready; e=
 
 통합 loader는 실제 DLL을 임시 인스턴스 폴더에 해시·GUID가 포함된 이름으로 복사하므로
 탐지 이벤트의 `module_name`은 `meccha-direct-bridge-v1-...dll` 형태가 정상이다.
+Windows Defender 등 보안 제품이 injector를 격리한 경우 보안 기능을 끄거나 예외를
+추가해 우회하지 말고, 앞의 안전한 `smoke_test` 결과를 DLL 양성 검증으로 사용한다.
 
 ```powershell
 Get-Content .\logs\dll_module_001.jsonl |
