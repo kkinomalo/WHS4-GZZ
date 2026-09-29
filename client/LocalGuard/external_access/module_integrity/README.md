@@ -124,7 +124,10 @@ py -3 -m client.LocalGuard.external_access.module_integrity.smoke_test
 게임 파일은 수정하지 않는다. 성공하면 `PASS`와 탐지 DLL, 점수, JSONL 저장 경로가
 출력된다.
 
-실제 게임 검증은 게임 실행 후 정확한 PID를 확인하고 정상 세션부터 수집한다.
+### 실제 게임 1: 정상 플레이 세션
+
+게임 실행 후 정확한 PID를 확인하고 정상 세션부터 수집한다. 아래 `12345`는 조회된
+실제 PID로 바꾼다.
 
 ```powershell
 Get-CimInstance Win32_Process -Filter "Name='PenguinHotel-Win64-Shipping.exe'" |
@@ -143,7 +146,45 @@ py -3 -m client.LocalGuard.external_access.module_integrity.runner `
 `baseline=True`가 기준선 생성이며, 그 뒤 같은 프로세스에서 발생한 DLL 변화가 탐지
 대상이다. `--once`를 붙인 명령을 두 번 실행하면 두 번째 실행도 새 기준선을 만들기
 때문에 전후 비교 테스트가 되지 않는다. 정상 세션은 5~10분 플레이하며 이벤트 수와
-뒤늦게 로드된 정상 DLL을 기록한다.
+뒤늦게 로드된 정상 DLL을 기록한 후 `Ctrl+C`로 runner를 종료한다. 탐지 이벤트가 0개면
+JSONL 파일이 생성되지 않을 수 있으며, 이는 저장 실패가 아니라 기록할 이벤트가 없었다는
+뜻이다.
+
+### 실제 게임 2: 승인된 DLL 양성 세션
+
+정상 세션 runner를 종료한 뒤, 시험 DLL이 아직 로드되지 않은 같은 게임에서 새 세션으로
+runner를 시작한다. 실제 PID는 정상 세션과 동일한지 다시 확인한다.
+
+```powershell
+py -3 -m client.LocalGuard.external_access.module_integrity.runner `
+  --game-exe PenguinHotel-Win64-Shipping.exe `
+  --game-pid 12345 `
+  --session-id dll_module_001 `
+  --player-id player_042 `
+  --skip-initial-audit `
+  --output logs\dll_module_001.jsonl
+```
+
+첫 `baseline=True`를 확인한 뒤 두 번째 관리자 PowerShell에서 사전에 코드·해시·진입점과
+부작용을 확인한 무해한 x64 테스트 DLL을 승인된 loader나 게임의 공식/검토된 모드 로더로
+로드한다. 출처와 동작을 확인하지 않은 저장소 내 DLL·인젝터는 실행하지 않는다. DLL은
+기본 3초 폴링 주기의 두 배인 6초 이상 로드 상태를 유지한다. 첫 PowerShell에는
+`added=1` 이상과 `emitted=1` 이상이 출력되어야 한다.
+
+```powershell
+Get-Content .\logs\dll_module_001.jsonl |
+  ForEach-Object { $_ | ConvertFrom-Json } |
+  Select-Object timestamp_ms, raw_score,
+    @{Name="change_type"; Expression={$_.evidence.change_type}},
+    @{Name="module_name"; Expression={$_.evidence.module_name}},
+    @{Name="sha256"; Expression={$_.evidence.sha256}},
+    @{Name="signature"; Expression={$_.evidence.signature_status}}
+```
+
+합격 조건은 대상 DLL의 `submodule=module_integrity`, `change_type=added`, 정확한 DLL
+이름·경로·SHA-256이 공통 JSON 이벤트에 기록되는 것이다. 같은 DLL을 변화 없이 다음
+주기에도 반복 기록하면 실패다. 시험이 끝나면 runner를 `Ctrl+C`로 종료하고 게임을
+재시작해 깨끗한 상태로 되돌린다.
 
 정상 플레이 중 뒤늦게 로드되는 정상 DLL도 있을 수 있으므로 이벤트가 나왔다는 사실만으로
 치트를 확정하지 않는다. 경로·SHA-256·서명·게시자를 검토한 뒤 정상으로 확인된 정확한
