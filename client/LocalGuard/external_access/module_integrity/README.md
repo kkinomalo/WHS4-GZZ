@@ -57,7 +57,8 @@ allowlist로 초기 감사를 시험하려면 `--audit-initial-snapshot`을 추�
 PID로 다시 실행해야 한다. 이름만 사용하는 모드는 동명 프로세스가 하나일 때 재실행을
 따라가 새 기준선을 만든다.
 
-한 번만 확인하려면 `--once`를 추가한다. 기본 간격은 3초, 출력은
+게임 발견과 첫 기준선 생성만 한 번 확인하려면 `--once`를 추가한다. DLL 로드 전후의
+변화 시험에는 `--once`를 사용하면 안 된다. 기본 간격은 3초, 출력은
 `logs/module_integrity.jsonl`이다. `process_access`와 별도 프로세스로 실행할 때는
 JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파일을 사용한다.
 
@@ -109,9 +110,52 @@ JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파
 
 ## 테스트
 
+먼저 게임을 실행하지 않고 단위 테스트와 실제 Windows API 스모크 테스트를 실행한다.
+
 ```powershell
+py -3 -c "import struct; print(struct.calcsize('P') * 8)"  # 결과가 64여야 함
 py -3 -m unittest discover -s client/LocalGuard/external_access -t . -v
+py -3 -m client.LocalGuard.external_access.module_integrity.smoke_test
 ```
+
+스모크 테스트는 별도 Python 보조 프로세스를 만들고 그 프로세스에 아직 로드되지 않은
+정상 Windows 시스템 DLL 하나를 로드한다. 그 전후 목록을 실제 Toolhelp API로 비교해
+`added` 이벤트가 공통 JSON 형식으로 정확히 한 번 기록되는지 확인한다. 게임 프로세스나
+게임 파일은 수정하지 않는다. 성공하면 `PASS`와 탐지 DLL, 점수, JSONL 저장 경로가
+출력된다.
+
+실제 게임 검증은 게임 실행 후 정확한 PID를 확인하고 정상 세션부터 수집한다.
+
+```powershell
+Get-CimInstance Win32_Process -Filter "Name='PenguinHotel-Win64-Shipping.exe'" |
+  Select-Object ProcessId, ExecutablePath
+
+py -3 -m client.LocalGuard.external_access.module_integrity.runner `
+  --game-exe PenguinHotel-Win64-Shipping.exe `
+  --game-pid 12345 `
+  --session-id normal_module_001 `
+  --player-id player_042 `
+  --skip-initial-audit `
+  --output logs\normal_module_001.jsonl
+```
+
+이 명령은 종료하지 말고 같은 runner를 계속 실행해야 한다. 첫 출력의
+`baseline=True`가 기준선 생성이며, 그 뒤 같은 프로세스에서 발생한 DLL 변화가 탐지
+대상이다. `--once`를 붙인 명령을 두 번 실행하면 두 번째 실행도 새 기준선을 만들기
+때문에 전후 비교 테스트가 되지 않는다. 정상 세션은 5~10분 플레이하며 이벤트 수와
+뒤늦게 로드된 정상 DLL을 기록한다.
+
+정상 플레이 중 뒤늦게 로드되는 정상 DLL도 있을 수 있으므로 이벤트가 나왔다는 사실만으로
+치트를 확정하지 않는다. 경로·SHA-256·서명·게시자를 검토한 뒤 정상으로 확인된 정확한
+파일만 allowlist 후보로 삼는다. 승인된 테스트 DLL이나 UE4SS 모드로 의심 세션을 시험할
+때는 LocalGuard로 기준선을 먼저 만든 뒤 DLL을 로드하고, 결과의
+`evidence.submodule=module_integrity`, `change_type=added`, DLL 해시·서명 정보가
+기록되는지 확인한다. 동적 추가만 분리해서 시험할 때 allowlist에 항목이 있다면
+`--skip-initial-audit`를 명시한다. 시험 DLL은 최소 두 번의 폴링 간격 동안 로드 상태를
+유지해야 한다.
+
+외부형 ESP는 게임 프로세스에 DLL을 로드하지 않을 수 있으므로 이 테스트의 대상이 아니다.
+그 경우 외부 프로세스가 게임에 연 핸들과 접근 권한은 `process_access`에서 검증한다.
 
 ## 알려진 한계
 

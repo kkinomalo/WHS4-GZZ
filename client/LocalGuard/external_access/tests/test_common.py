@@ -4,11 +4,14 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest import mock
 
 from client.LocalGuard.external_access.common import (
     ArtifactCache, ArtifactInspector, ProcessLocator, TargetProcess,
     append_detection_jsonl, build_detection_result,
 )
+from client.LocalGuard.external_access.common import artifact_inspector
 
 
 class ArtifactInspectorTests(unittest.TestCase):
@@ -67,6 +70,48 @@ class ArtifactInspectorTests(unittest.TestCase):
 
         self.assertNotEqual(first.sha256, second.sha256)
         self.assertEqual(calls, 2)
+
+    @unittest.skipUnless(os.name == "nt", "Windows only")
+    def test_authenticode_uses_system_powershell_and_clean_module_path(self):
+        system_directory = Path("C:/Windows/System32")
+        completed = CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout="Valid\nCN=Test Publisher\n",
+            stderr="",
+        )
+        with (
+            mock.patch.object(
+                artifact_inspector,
+                "get_windows_system_directory",
+                return_value=system_directory,
+            ),
+            mock.patch.object(Path, "is_file", return_value=True),
+            mock.patch.object(
+                artifact_inspector.subprocess,
+                "run",
+                return_value=completed,
+            ) as run,
+        ):
+            status, publisher = artifact_inspector.read_windows_authenticode(
+                Path("C:/game/test.dll")
+            )
+
+        self.assertEqual((status, publisher), ("trusted", "CN=Test Publisher"))
+        command = run.call_args.args[0]
+        environment = run.call_args.kwargs["env"]
+        powershell_root = system_directory / "WindowsPowerShell" / "v1.0"
+        module_root = powershell_root / "Modules"
+        self.assertEqual(command[0], str(powershell_root / "powershell.exe"))
+        self.assertEqual(environment["PSModulePath"], str(module_root))
+        self.assertEqual(
+            environment["LOCALGUARD_SECURITY_MODULE"],
+            str(
+                module_root
+                / "Microsoft.PowerShell.Security"
+                / "Microsoft.PowerShell.Security.psd1"
+            ),
+        )
 
 
 class ProcessLocatorTests(unittest.TestCase):
