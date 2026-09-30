@@ -1,8 +1,8 @@
 # LocalGuard external_access
 
-외부 프로세스 접근 분석과 게임 내부 모듈 무결성 탐지기가 함께 쓰는 공통 기반이다.
-외부 프로세스 접근 탐지 결과는 로컬 JSONL에 기록하고, shared client가 설정돼 있으면
-같은 7필드 결과를 중앙 전송 대기열에도 넣는다.
+외부 프로세스 접근 분석과 게임 내부 모듈 무결성 탐지기가 함께 쓰는 LocalGuard
+구성이다. 두 탐지 결과는 각각의 로컬 JSONL에 먼저 기록하고, shared client가
+설정돼 있으면 같은 7필드 결과를 각 모듈 전용 중앙 전송 대기열에도 넣는다.
 
 ```text
 external_access/
@@ -14,7 +14,7 @@ external_access/
 │  ├─ artifact_inspector.py  # SHA-256·Authenticode·게시자 조회
 │  └─ artifact_cache.py      # 파일이 안 바뀌었으면 검사 결과 재사용
 ├─ process_access/           # 위험한 게임 프로세스 핸들 관찰·점수화·JSONL 기록
-├─ module_integrity/         # DLL 기준선·변화 탐지 (다음 단계)
+├─ module_integrity/         # DLL 기준선·변화·신뢰 정보 탐지
 └─ tests/
 ```
 
@@ -26,7 +26,10 @@ external_access/
     "player_id": "player_042",
     "module": "external_access",
     "timestamp_ms": 507000,
-    "evidence": {"access_mask": "PROCESS_VM_WRITE"},
+    "evidence": {
+        "submodule": "external_process",
+        "access_mask": "0x00000020"
+    },
     "reasons": ["Untrusted process has VM_WRITE access to the game"],
     "raw_score": 3,
 }
@@ -37,10 +40,11 @@ external_access/
 
 ## 테스트
 
-저장소 루트에서 실행한다.
+저장소 루트에서 실행한다. 아래 명령은 공통, process_access,
+module_integrity 테스트를 모두 찾는다.
 
 ```powershell
-py -3 -m unittest discover -s client/LocalGuard/external_access/tests -t . -v
+py -3 -m unittest discover -s client/LocalGuard/external_access -t . -v
 ```
 
 단위 테스트는 SHA-256, 캐시 무효화, 게임 PID 재시작 식별, JSONL 출력,
@@ -62,9 +66,48 @@ py -3 -m client.LocalGuard.external_access.process_access.runner --game-exe Peng
 `queued`는 로컬 outbox 저장을 뜻하며 서버 저장 성공을 뜻하지 않는다. 중앙 수신 성공은
 receiver가 준비된 뒤 `/api/detection` 종단 테스트로 확인해야 한다.
 
+Launcher는 `external_access`와 `module_integrity`를 각각 독립된 상주 프로세스로
+실행한다. 각 프로세스에 동일한 session/player/t0와 런처가 확인한 정확한 게임 PID를
+전달하고 서로 다른 로컬 로그 및 outbox를 사용한다. 따라서 한 감시기가 종료돼도
+다른 감시기를 막지 않으며, Launcher/Watchdog가 종료와 재시작 상태를 확인할 수 있다.
+
 기존 7개 최상위 필드와 로컬 JSONL 기록은 유지한다. 결과를 JSONL에 기록한 다음
 `send_detection()`을 호출하며, 모듈 종료 시 `flush_client()`와 `shutdown_client()`를
 호출한다. 서버 전송은 차단·종료 결정을 하지 않는다.
+
+## 게임 내부 모듈 무결성 실행
+
+LocalGuard를 게임보다 먼저 실행한 뒤 64비트 Python에서 아래처럼 실행한다.
+
+```powershell
+py -3 -m client.LocalGuard.external_access.module_integrity.runner --game-exe PenguinHotel-Win64-Shipping.exe --session-id normal_001 --player-id player_042
+```
+
+첫 성공 스냅샷은 DLL 비교 기준선만 만들고 탐지 이벤트를 내지 않는다. 이후 새로
+추가되거나 같은 경로에서 매핑 정보가 바뀐 DLL만 검사한다. DLL 파일의 SHA-256,
+Authenticode 서명, 게시자를 공통 캐시로 조회하고, 정확한 이름+SHA-256 및 선택적인
+경로·서명·게시자 조건이 모두 일치한 allowlist 항목만 제외한다. 결과 기본 경로는
+`logs/module_integrity.jsonl`이다.
+
+팀 Launcher로 두 담당 탐지기만 통합 실행하려면 아래처럼 실행한다. Launcher가 게임을
+찾아 정확한 PID와 공통 시간축을 두 runner에 넘긴다.
+
+```powershell
+py -3 client/Launcher/main.py --only external_access,module_integrity `
+  --session normal_001 --player player_042
+```
+
+센서/API 오류가 세 번 연속 발생하면 runner는 종료 코드 2로 끝난다. 프로세스만 살아
+있고 실제 감시는 멈춘 상태를 정상으로 표시하지 않도록 Launcher/Watchdog가 이 종료를
+감지하고 제한된 재시작 정책을 적용한다.
+
+초기 점수는 새 DLL `+1`, 같은 경로의 매핑 정보 변경 `+1`, 미서명 `+1`, 유효하지
+않은 서명 `+2`이다. 서명 조회 실패는 수집 한계일 수 있으므로 추가 점수를 주지 않는다.
+이 값은 최종 밴 점수가 아니라 ReplayAnalyzer에서 조정할 원시 근거 점수다.
+
+상세 구조와 한계는 [`module_integrity/README.md`](module_integrity/README.md)에,
+발표용 평문은 [`module_integrity/STRUCTURE_PRESENTATION.txt`](module_integrity/STRUCTURE_PRESENTATION.txt)에
+정리했다.
 
 초기 점수 정책은 `PROCESS_VM_WRITE=2`, `PROCESS_VM_OPERATION=2`,
 `PROCESS_CREATE_THREAD=3`이다. 미서명 또는 조회 불가 서명은 위험 handle과 결합할

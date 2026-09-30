@@ -24,17 +24,49 @@ class PROCESSENTRY32W(ctypes.Structure):
     ]
 
 
+class AmbiguousTargetProcessError(OSError):
+    """같은 실행 파일 이름의 대상이 여러 개라 안전하게 고를 수 없는 경우."""
+
+    def __init__(self, executable_name: str, pids: Iterable[int]) -> None:
+        self.executable_name = executable_name
+        self.pids = tuple(int(pid) for pid in pids)
+        super().__init__(
+            f"같은 이름의 대상 프로세스가 여러 개임: {executable_name} "
+            f"(PIDs: {', '.join(map(str, self.pids))})"
+        )
+
+
 class ProcessLocator:
     def __init__(self, game_executable_name: str,
-                 enumerator: Optional[Callable[[], Iterable[TargetProcess]]] = None) -> None:
+                 enumerator: Optional[Callable[[], Iterable[TargetProcess]]] = None,
+                 *, expected_pid: Optional[int] = None,
+                 require_unique: bool = False) -> None:
         if not game_executable_name:
             raise ValueError("game_executable_name은 비어 있을 수 없음")
+        if expected_pid is not None and (
+            isinstance(expected_pid, bool)
+            or not isinstance(expected_pid, int)
+            or expected_pid <= 0
+        ):
+            raise ValueError("expected_pid는 양의 정수여야 함")
         self.game_executable_name = game_executable_name.casefold()
         self._enumerator = enumerator or iter_windows_processes
+        self._expected_pid = expected_pid
+        self._require_unique = bool(require_unique)
 
     def find(self) -> Optional[TargetProcess]:
-        return next((p for p in self._enumerator()
-                     if p.executable_name.casefold() == self.game_executable_name), None)
+        matches = [
+            process
+            for process in self._enumerator()
+            if process.executable_name.casefold() == self.game_executable_name
+            and (self._expected_pid is None or process.pid == self._expected_pid)
+        ]
+        if self._require_unique and len(matches) > 1:
+            raise AmbiguousTargetProcessError(
+                self.game_executable_name,
+                (process.pid for process in matches),
+            )
+        return matches[0] if matches else None
 
     @staticmethod
     def was_restarted(previous: Optional[TargetProcess], current: Optional[TargetProcess]) -> bool:

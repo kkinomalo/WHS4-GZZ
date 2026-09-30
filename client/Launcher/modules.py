@@ -41,7 +41,7 @@ CONTINUOUS = "continuous"  # 자기가 알아서 계속 돈다
 class Module:
     name: str
     owner: str                      # 누구 담당인지. 안 붙을 때 물어볼 사람
-    argv: List[str]                 # {session} {player} {t0} {window} {game_bin} 을 쓸 수 있다
+    argv: List[str]                 # {session} {player} {t0} {window} {game_bin} {game_pid}
     mode: str = CONTINUOUS
     cwd: Optional[str] = None       # None 이면 레포 루트
     needs_game: bool = True         # 게임이 떠 있어야 의미가 있는가
@@ -115,7 +115,7 @@ MODULES: List[Module] = [
         name="external_access",
         owner="1번 (은지·지완)",
         argv=[PY, "-m", "client.LocalGuard.external_access.process_access.runner",
-              "--game-exe", GAME_EXE,
+              "--game-exe", GAME_EXE, "--game-pid", "{game_pid}",
               "--session-id", "{session}", "--player-id", "{player}",
               # 은지님 #43 에서 받게 됐다. 안 넘기면 timestamp_ms 가 이 프로세스 시작
               # 기준이라 다른 모듈과 시간축이 갈린다.
@@ -123,6 +123,17 @@ MODULES: List[Module] = [
               "--output", "client/LocalGuard/external_access/logs/external_access.jsonl"],
         mode=CONTINUOUS,
         note="위험 핸들 감시. 상대 import 라 -m 으로만 돈다",
+    ),
+    Module(
+        name="module_integrity",
+        owner="1번 (은지·지완)",
+        argv=[PY, "-m", "client.LocalGuard.external_access.module_integrity.runner",
+              "--game-exe", GAME_EXE, "--game-pid", "{game_pid}",
+              "--session-id", "{session}", "--player-id", "{player}",
+              "--t0", "{t0}",
+              "--output", "client/LocalGuard/external_access/logs/module_integrity.jsonl"],
+        mode=CONTINUOUS,
+        note="게임 DLL 기준선·추가/변경·해시·서명 감시. 상대 import 라 -m 으로만 돈다",
     ),
     Module(
         name="input_signature",

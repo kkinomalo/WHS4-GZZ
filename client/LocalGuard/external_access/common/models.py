@@ -7,7 +7,7 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class FileFingerprint:
-    """캐시 무효화에 쓰는 파일 상태."""
+    """내용 해시와 함께 캐시 무효화에 쓰는 파일 메타데이터."""
 
     path: Path
     size: int
