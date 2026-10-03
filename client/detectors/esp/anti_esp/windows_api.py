@@ -53,6 +53,9 @@ class ProcessInfo:
     pid: int
     image_path: str | None
     created_at: float | None = None
+    parent_pid: int | None = None
+    parent_created_at: float | None = None
+    parent_image_path: str | None = None
 
     @property
     def name(self) -> str:
@@ -284,7 +287,7 @@ def find_processes_by_name(executable_name: str) -> list[ProcessInfo]:
 
     invalid_handle = ctypes.c_void_p(-1).value
     snapshot = None
-    matches: list[tuple[int, str]] = []
+    matches: list[tuple[int, str, int | None]] = []
     try:
         snapshot = _kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
         if not snapshot or int(snapshot) == invalid_handle:
@@ -295,7 +298,10 @@ def find_processes_by_name(executable_name: str) -> list[ProcessInfo]:
         while ok:
             name = str(entry.szExeFile)
             if name.casefold() == wanted:
-                matches.append((int(entry.th32ProcessID), name))
+                parent_pid = int(entry.th32ParentProcessID)
+                matches.append(
+                    (int(entry.th32ProcessID), name, parent_pid if parent_pid > 0 else None)
+                )
             ok = bool(_kernel32.Process32NextW(snapshot, ctypes.byref(entry)))
     except (OSError, TypeError, ValueError):
         return []
@@ -311,8 +317,11 @@ def find_processes_by_name(executable_name: str) -> list[ProcessInfo]:
             pid,
             get_process_image_path(pid) or name,
             get_process_creation_time(pid),
+            parent_pid,
+            get_process_creation_time(parent_pid) if parent_pid is not None else None,
+            get_process_image_path(parent_pid) if parent_pid is not None else None,
         )
-        for pid, name in matches
+        for pid, name, parent_pid in matches
     ]
 
 

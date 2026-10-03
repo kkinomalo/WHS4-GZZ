@@ -5,6 +5,7 @@ import unittest
 import json
 from dataclasses import replace
 from pathlib import Path
+from unittest.mock import PropertyMock, patch
 
 from anti_esp.config import AllowlistSettings, Settings, TelemetrySettings
 from anti_esp.controller import AntiEspController
@@ -209,6 +210,53 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(snapshot["status"], "INSUFFICIENT")
         finally:
             controller.close()
+
+    def test_missing_admin_or_sysmon_forces_insufficient_instead_of_low(self):
+        def make_controller(*, elevated):
+            controller = AntiEspController(
+                Settings(database_path=Path(":memory:")),
+                poller=FakePoller([]),
+                overlay_monitor=FakeOverlay(),
+                process_provider=lambda _: [],
+                store=SQLiteEvidenceStore(":memory:"),
+                elevation_provider=lambda: elevated,
+            )
+            controller._sensor_state["game"] = {"status": "online", "running": True}
+            controller._sensor_state["overlay"] = {"status": "online", "enabled": True}
+            controller._sensor_state["sysmon"] = {
+                "status": "online",
+                "available": True,
+            }
+            return controller
+
+        with patch.object(
+            AntiEspController, "running", new_callable=PropertyMock, return_value=True
+        ):
+            no_admin = make_controller(elevated=False)
+            try:
+                snapshot = no_admin.snapshot()
+                self.assertLess(
+                    snapshot["observation_confidence"],
+                    no_admin._engine.minimum_observation_confidence,
+                )
+                self.assertEqual(snapshot["status"], "INSUFFICIENT")
+            finally:
+                no_admin.close()
+
+            no_sysmon = make_controller(elevated=True)
+            try:
+                no_sysmon._sensor_state["sysmon"] = {
+                    "status": "unavailable",
+                    "available": False,
+                }
+                snapshot = no_sysmon.snapshot()
+                self.assertLess(
+                    snapshot["observation_confidence"],
+                    no_sysmon._engine.minimum_observation_confidence,
+                )
+                self.assertEqual(snapshot["status"], "INSUFFICIENT")
+            finally:
+                no_sysmon.close()
 
     def test_overlay_path_allowlist_suppresses_event(self):
         settings = Settings(

@@ -24,6 +24,31 @@ class SensorContextTests(unittest.TestCase):
         mapping.clear()
         self.assertEqual(context.target_by_pid[77], target)
 
+    def test_parent_metadata_requires_a_valid_parent_pid(self):
+        with self.assertRaises(ValueError):
+            ProcessTarget(
+                77,
+                r"C:\Game\game.exe",
+                parent_created_at=100.0,
+            )
+        with self.assertRaises(ValueError):
+            ProcessTarget(
+                77,
+                r"C:\Game\game.exe",
+                parent_executable_path=r"C:\Steam\steam.exe",
+            )
+
+        target = ProcessTarget(
+            77,
+            r"C:\Game\game.exe",
+            created_at=200.0,
+            parent_pid=22,
+            parent_created_at=100.0,
+            parent_executable_path=r"C:\Steam\steam.exe",
+        )
+        self.assertEqual(target.parent_pid, 22)
+        self.assertEqual(target.parent_executable_path, r"C:\Steam\steam.exe")
+
 
 if __name__ == "__main__":
     unittest.main()

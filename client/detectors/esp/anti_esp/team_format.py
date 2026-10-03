@@ -2,12 +2,166 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
-from typing import Iterable
+import ntpath
+from typing import Any, Iterable, Mapping
 
 from .core.events import SensorEvent, TeamDetectionEvent
 from .models import EvidenceEvent
 from .shared_transport import validate_common_event
+
+
+_PRIVATE_EVIDENCE_KEYS = frozenset(
+    {
+        "computer",
+        "computername",
+        "sourceuser",
+        "targetuser",
+        "user",
+        "username",
+        "title",
+        "windowtitle",
+    }
+)
+_PATH_EVIDENCE_KEYS = frozenset(
+    {
+        "executablepath",
+        "gameexecutable",
+        "imagepath",
+        "modulepath",
+        "path",
+        "processpath",
+        "sourceimage",
+        "sourcepath",
+        "targetimage",
+        "targetpath",
+    }
+)
+_IDENTITY_EVIDENCE_KEYS = frozenset(
+    {
+        "sha256",
+        "source_sha256",
+        "signature_status",
+        "signature_native_code",
+        "signature_native_code_hex",
+        "signature_backend",
+    }
+)
+_EVENT_EVIDENCE_KEYS: dict[str, frozenset[str]] = {
+    "process_access": frozenset(
+        {
+            "inventory_source",
+            "observation_kind",
+            "previous_granted_access",
+            "source_pid",
+            "source_image",
+            "target_pid",
+            "target_image",
+            "granted_access",
+            "granted_access_hex",
+            "access_labels",
+        }
+    )
+    | _IDENTITY_EVIDENCE_KEYS,
+    "window_overlap": frozenset(
+        {
+            "game_pid",
+            "window_pid",
+            "hwnd",
+            "process_path",
+            "class_name",
+            "extended_style",
+            "style_labels",
+            "window_rect",
+            "intersection_rect",
+            "game_overlap_ratio",
+            "candidate_overlap_ratio",
+        }
+    )
+    | _IDENTITY_EVIDENCE_KEYS,
+}
+_MODULE_EVIDENCE_KEYS = frozenset(
+    {
+        "target_pid",
+        "module_name",
+        "module_path",
+        "image_size",
+        "previous_image_size",
+        "observation_phase",
+        "baseline_created",
+    }
+) | _IDENTITY_EVIDENCE_KEYS
+
+
+def _path_digest(value: str) -> str:
+    normalized = ntpath.normcase(ntpath.normpath(value.strip()))
+    return hashlib.sha256(normalized.encode("utf-8", errors="surrogatepass")).hexdigest()
+
+
+def _public_path(value: str) -> tuple[str, str]:
+    """Return a useful basename plus an irreversible full-path fingerprint."""
+
+    stripped = value.strip().rstrip("\\/")
+    basename = ntpath.basename(stripped) or "<path>"
+    return basename, _path_digest(value)
+
+
+def _public_sensor_event_id(sensor_event: SensorEvent) -> str:
+    """Keep cross-log correlation without exposing raw IDs containing host data."""
+
+    material = "\0".join(
+        (
+            sensor_event.session_id,
+            sensor_event.sensor_id,
+            sensor_event.event_id,
+        )
+    )
+    digest = hashlib.sha256(material.encode("utf-8", errors="surrogatepass")).hexdigest()
+    return f"sensor-sha256:{digest}"
+
+
+def _allowed_evidence_keys(event_type: str) -> frozenset[str]:
+    if event_type.startswith("module_"):
+        return _MODULE_EVIDENCE_KEYS
+    return _EVENT_EVIDENCE_KEYS.get(event_type, frozenset())
+
+
+def _public_event_evidence(sensor_event: SensorEvent) -> dict[str, Any]:
+    """Select only fields needed for central scoring/review.
+
+    Local raw sensor logs retain the complete payload.  In particular, Sysmon's
+    arbitrary ``data`` mapping, call trace, rule name, host and account fields
+    never cross this central-telemetry boundary.
+    """
+
+    allowed = _allowed_evidence_keys(sensor_event.event_type)
+    selected = {
+        key: value for key, value in sensor_event.payload.items() if key in allowed
+    }
+    public = _public_evidence(selected)
+    return public if isinstance(public, dict) else {}
+
+
+def _public_evidence(value: Any) -> Any:
+    """Detach shared evidence while removing endpoint/user-identifying labels."""
+
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized = "".join(char for char in str(key).casefold() if char.isalnum())
+            if normalized in _PRIVATE_EVIDENCE_KEYS:
+                continue
+            if normalized in _PATH_EVIDENCE_KEYS and isinstance(item, str):
+                basename, digest = _public_path(item)
+                sanitized[str(key)] = basename
+                sanitized[f"{key}_path_sha256"] = digest
+                continue
+            sanitized[str(key)] = _public_evidence(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_public_evidence(item) for item in value]
+    return value
 
 
 def _raw_points(event: EvidenceEvent) -> int:
@@ -94,10 +248,10 @@ class TeamEventAdapter:
 
         reasons = tuple(dict.fromkeys(item.reason for item in linked if item.reason))
         elapsed_ms = max(0, elapsed_ms)
-        public_evidence = dict(sensor_event.payload)
+        public_evidence = _public_event_evidence(sensor_event)
         public_evidence.update(
             {
-                "sensor_event_id": sensor_event.event_id,
+                "sensor_event_id": _public_sensor_event_id(sensor_event),
                 "event_type": sensor_event.event_type,
                 "categories": list(dict.fromkeys(item.category for item in linked)),
             }

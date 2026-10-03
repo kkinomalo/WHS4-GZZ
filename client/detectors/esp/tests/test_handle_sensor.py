@@ -137,7 +137,7 @@ class HandleSensorTests(unittest.TestCase):
         self.assertNotIn("suspicious", event.payload)
         self.assertNotIn("cheat", event.payload)
 
-    def test_persistent_handle_is_deduplicated_then_periodically_reemitted(self):
+    def test_persistent_handle_is_never_periodically_reemitted(self):
         current = handle()
         provider = FakeProvider(
             [
@@ -159,8 +159,128 @@ class HandleSensorTests(unittest.TestCase):
         self.assertEqual(second.events, ())
         self.assertEqual(second.details["deduplicated_count"], 1)
         third = sensor.poll(self.context)
-        self.assertEqual(len(third.events), 1)
-        self.assertEqual(third.events[0].payload["observation_kind"], "periodic")
+        self.assertEqual(third.events, ())
+        self.assertEqual(third.details["deduplicated_count"], 1)
+
+    def test_same_handle_access_change_emits_changed_event(self):
+        before = handle(granted_access=0x10)
+        after = handle(granted_access=0x30)
+        provider = FakeProvider([snapshot(before), snapshot(after, observed_at=102.0)])
+        sensor = CurrentProcessHandleSensor(enumeration_provider=provider, self_pid=999)
+
+        self.assertEqual(sensor.poll(self.context).events, ())
+        changed = sensor.poll(self.context)
+
+        self.assertEqual(len(changed.events), 1)
+        self.assertEqual(changed.events[0].payload["observation_kind"], "changed")
+        self.assertEqual(changed.events[0].payload["previous_granted_access"], 0x10)
+
+    def test_registered_anticheat_pid_is_excluded_before_inventory(self):
+        provider = FakeProvider([snapshot(handle(source_pid=300))])
+        sensor = CurrentProcessHandleSensor(
+            enumeration_provider=provider,
+            self_pid=999,
+            excluded_pid_provider=lambda: frozenset({300}),
+        )
+
+        batch = sensor.poll(self.context)
+
+        self.assertEqual(batch.events, ())
+        self.assertEqual(batch.details["filtered_record_count"], 0)
+        self.assertEqual(
+            provider.calls, [(frozenset({77}), frozenset({300, 999}))]
+        )
+
+    def test_only_verified_steam_launch_parent_full_handle_is_excluded(self):
+        steam_context = SensorContext(
+            "esp_001",
+            (
+                ProcessTarget(
+                    77,
+                    r"C:\Game\game.exe",
+                    created_at=100.0,
+                    parent_pid=22,
+                    parent_created_at=50.0,
+                    parent_executable_path=r"C:\Program Files (x86)\Steam\steam.exe",
+                ),
+            ),
+            session_started_at=90.0,
+            observed_at=101.0,
+        )
+        full_access = 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0040
+        provider = FakeProvider(
+            [
+                snapshot(observed_at=100.0),
+                snapshot(
+                    handle(
+                        source_pid=22,
+                        source_image=r"C:\Program Files (x86)\Steam\steam.exe",
+                        granted_access=full_access,
+                    ),
+                    observed_at=101.0,
+                ),
+                snapshot(
+                    handle(
+                        source_pid=22,
+                        source_image=r"C:\Program Files (x86)\Steam\steam.exe",
+                        granted_access=full_access,
+                    ),
+                    observed_at=120.0,
+                ),
+            ]
+        )
+        sensor = CurrentProcessHandleSensor(
+            enumeration_provider=provider,
+            self_pid=999,
+            steam_source_verifier=lambda path: path == r"C:\Program Files (x86)\Steam\steam.exe",
+        )
+
+        sensor.poll(steam_context)
+        self.assertEqual(sensor.poll(steam_context).events, ())
+        self.assertEqual(sensor.poll(steam_context).events, ())
+
+    def test_unverified_renamed_steam_parent_is_not_excluded(self):
+        fake_steam = r"C:\Temp\steam.exe"
+        context = SensorContext(
+            "esp_001",
+            (
+                ProcessTarget(
+                    77,
+                    r"C:\Game\game.exe",
+                    created_at=100.0,
+                    parent_pid=22,
+                    parent_created_at=50.0,
+                    parent_executable_path=fake_steam,
+                ),
+            ),
+            session_started_at=90.0,
+            observed_at=101.0,
+        )
+        full_access = 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0040
+        provider = FakeProvider(
+            [
+                snapshot(observed_at=100.0),
+                snapshot(
+                    handle(
+                        source_pid=22,
+                        source_image=fake_steam,
+                        granted_access=full_access,
+                    ),
+                    observed_at=101.0,
+                ),
+            ]
+        )
+        sensor = CurrentProcessHandleSensor(
+            enumeration_provider=provider,
+            self_pid=999,
+            steam_source_verifier=lambda _path: False,
+        )
+
+        sensor.poll(context)
+        events = sensor.poll(context).events
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["source_image"], fake_steam)
 
     def test_closed_then_reopened_same_handle_is_new(self):
         current = handle()

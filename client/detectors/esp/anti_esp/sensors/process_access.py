@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..core.context import SensorContext
 from ..core.events import SensorBatch, SensorEvent
 from ..sysmon import SysmonPoller, SysmonProcessAccess
+from .process_relationships import is_steam_launch_parent_access
 
 
 class SysmonProcessAccessSensor:
@@ -28,6 +29,8 @@ class SysmonProcessAccessSensor:
         clock: Callable[[], float] = time.time,
         stale_tolerance_seconds: float = 2.0,
         source_identity_provider: Callable[[str], Mapping[str, Any]] | None = None,
+        excluded_pid_provider: Callable[[], Iterable[int]] | None = None,
+        steam_source_verifier: Callable[[str], bool] | None = None,
     ) -> None:
         if stale_tolerance_seconds < 0:
             raise ValueError("stale_tolerance_seconds must be non-negative")
@@ -36,13 +39,16 @@ class SysmonProcessAccessSensor:
         self._clock = clock
         self._stale_tolerance = float(stale_tolerance_seconds)
         self._source_identity_provider = source_identity_provider
+        self._excluded_pid_provider = excluded_pid_provider
+        self._steam_source_verifier = steam_source_verifier
 
     def _belongs_to_current_target(
         self,
         record: SysmonProcessAccess,
         context: SensorContext,
+        excluded_pids: frozenset[int] = frozenset(),
     ) -> bool:
-        if record.source_process_id == self._self_pid:
+        if record.source_process_id == self._self_pid or record.source_process_id in excluded_pids:
             return False
         if record.target_process_id is None:
             return False
@@ -66,7 +72,24 @@ class SysmonProcessAccessSensor:
             context.session_started_at,
             target.created_at if target.created_at is not None else 0.0,
         )
-        return record.timestamp + self._stale_tolerance >= lower_bound
+        if record.timestamp + self._stale_tolerance < lower_bound:
+            return False
+        steam_source_verified = False
+        if self._steam_source_verifier is not None and record.source_image:
+            try:
+                steam_source_verified = bool(
+                    self._steam_source_verifier(record.source_image)
+                )
+            except Exception:
+                steam_source_verified = False
+        return not is_steam_launch_parent_access(
+            target=target,
+            source_pid=record.source_process_id,
+            source_image=record.source_image,
+            granted_access=record.granted_access,
+            observed_at=record.timestamp,
+            source_verified=steam_source_verified,
+        )
 
     def _event_from_record(
         self,
@@ -166,11 +189,24 @@ class SysmonProcessAccessSensor:
             )
 
         now = self._clock()
+        try:
+            excluded_pids = frozenset(
+                int(pid)
+                for pid in (
+                    self._excluded_pid_provider()
+                    if self._excluded_pid_provider is not None
+                    else ()
+                )
+                if int(pid) > 0
+            )
+        except Exception:
+            excluded_pids = frozenset()
         events = tuple(
             self._event_from_record(record, context, now)
             for record in result.events
-            if self._belongs_to_current_target(record, context)
+            if self._belongs_to_current_target(record, context, excluded_pids)
         )
+        details["excluded_anticheat_pid_count"] = len(excluded_pids)
         return SensorBatch(
             sensor_id=self.sensor_id,
             status="online",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import os
 import math
 import threading
@@ -19,16 +20,27 @@ from .overlay import OverlayMonitor
 from .pipeline import EspDetectionPipeline
 from .policy import FileFingerprintCache, source_is_allowlisted
 from .scoring import DEFAULT_POLICIES, SuspicionEngine
+from .sensors.anticheat_registry import AntiCheatPidRegistry
 from .sensors.file_identity import FileIdentityEnricher
 from .sensors.handle_sensor import CurrentProcessHandleSensor
 from .sensors.identity import PseudonymousIdentity
 from .sensors.module_events import LoadedModuleSensor
 from .sensors.process_access import SysmonProcessAccessSensor
+from .sensors.process_relationships import SteamExecutableVerifier
 from .sensors.window_overlap import WindowOverlapSensor
 from .store import SQLiteEvidenceStore
 from .sysmon import SysmonPoller
 from .team_format import TeamEventAdapter
 from .windows_api import ProcessInfo, find_processes_by_name
+
+
+def _is_process_elevated() -> bool:
+    if os.name != "nt":
+        return False
+    try:
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except (AttributeError, OSError):
+        return False
 
 
 class AntiEspController:
@@ -55,6 +67,8 @@ class AntiEspController:
         handle_sensor: Any | None = None,
         session_started_at: float | None = None,
         team_event_sink: Callable[[dict[str, Any], str], bool] | None = None,
+        anticheat_pid_provider: Callable[[], Iterable[int]] | None = None,
+        elevation_provider: Callable[[], bool] = _is_process_elevated,
     ) -> None:
         self.settings = settings
         self._clock = clock
@@ -75,13 +89,19 @@ class AntiEspController:
         # checks below reject stale records while retaining accesses that happened
         # after the game started but before this monitor UI was opened.
         poller = poller or SysmonPoller(include_existing=True)
+        registered_anticheat_pids = (
+            anticheat_pid_provider or AntiCheatPidRegistry().live_pids
+        )
         self._fingerprints = FileFingerprintCache()
         self._file_identity = FileIdentityEnricher(fingerprints=self._fingerprints)
+        steam_source_verifier = SteamExecutableVerifier(self._file_identity)
         self._process_access_sensor = process_access_sensor or SysmonProcessAccessSensor(
             poller=poller,
             self_pid=os.getpid(),
             clock=clock,
             source_identity_provider=self._file_identity,
+            excluded_pid_provider=registered_anticheat_pids,
+            steam_source_verifier=steam_source_verifier,
         )
         # ``overlay_monitor`` remains a compatibility injection point for old
         # tests/callers. Production uses the strict factual window sensor.
@@ -104,6 +124,8 @@ class AntiEspController:
             self_pid=os.getpid(),
             cooldown_seconds=settings.handle_monitor.cooldown_seconds,
             source_identity_provider=self._file_identity,
+            excluded_pid_provider=registered_anticheat_pids,
+            steam_source_verifier=steam_source_verifier,
         )
         self._store = store or SQLiteEvidenceStore(settings.database_path)
         policies = {
@@ -157,12 +179,25 @@ class AntiEspController:
         self._lock = threading.RLock()
         self._closed = False
         self._fatal_error: str | None = None
+        try:
+            self._elevated = bool(elevation_provider())
+        except Exception:
+            self._elevated = False
         self._last_overlay_scan = 0.0
         self._last_module_scan = 0.0
         self._last_handle_scan = 0.0
         self._game_pids: tuple[int, ...] = ()
         self._sensor_state: dict[str, dict[str, Any]] = {
             "collector": {"status": "waiting", "available": True},
+            "privilege": {
+                "status": "online" if self._elevated else "unavailable",
+                "elevated": self._elevated,
+                "message": (
+                    "administrator token available"
+                    if self._elevated
+                    else "administrator privileges are required for complete collection"
+                ),
+            },
             "sysmon": {"status": "waiting", "available": False},
             "game": {"status": "waiting", "running": False},
             "overlay": {
@@ -195,6 +230,11 @@ class AntiEspController:
     @property
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    @property
+    def fatal_error(self) -> str | None:
+        with self._lock:
+            return self._fatal_error
 
     @property
     def telemetry_session_dir(self) -> Path | None:
@@ -312,6 +352,9 @@ class AntiEspController:
                     int(process.pid),
                     process.image_path or self.settings.game_executable,
                     process.created_at,
+                    process.parent_pid,
+                    process.parent_created_at,
+                    process.parent_image_path,
                 )
                 for process in processes
             }
@@ -526,6 +569,7 @@ class AntiEspController:
             overlay = dict(self._sensor_state["overlay"])
             modules = dict(self._sensor_state["modules"])
             handles = dict(self._sensor_state["handles"])
+            privilege = dict(self._sensor_state["privilege"])
         if not self.running or not bool(game.get("running")):
             return 0.0
 
@@ -551,7 +595,26 @@ class AntiEspController:
             and str(handles.get("status", "")).lower() == "online"
         ):
             confidence += 15.0
-        return min(100.0, max(0.0, confidence))
+        confidence = min(100.0, max(0.0, confidence))
+
+        required_online = [
+            bool(privilege.get("elevated")),
+            bool(sysmon.get("available"))
+            and str(sysmon.get("status", "")).lower() == "online",
+        ]
+        for enabled, state in (
+            (self.settings.overlay.enabled, overlay),
+            (self.settings.module_monitor.enabled, modules),
+            (self.settings.handle_monitor.enabled, handles),
+        ):
+            if enabled:
+                required_online.append(str(state.get("status", "")).lower() == "online")
+        if not all(required_online):
+            insufficient_cap = max(
+                0.0, self._engine.minimum_observation_confidence - 1.0
+            )
+            return min(insufficient_cap, confidence)
+        return confidence
 
     def snapshot(self) -> dict[str, Any]:
         snapshot = self._engine.score(

@@ -101,6 +101,23 @@ class EspEventDetectorTests(unittest.TestCase):
         self.assertEqual(self.detector.detect(self_access), ())
         self.assertEqual(self.detector.detect(unattributed), ())
 
+    def test_authenticode_trust_alone_does_not_allowlist_steam_or_other_sources(self):
+        signed_steam = observation(
+            "process_access",
+            {
+                "source_pid": 10,
+                "target_pid": 20,
+                "source_image": r"C:\Program Files (x86)\Steam\steam.exe",
+                "signature_status": "trusted",
+                "access_labels": ["VM_READ", "VM_WRITE"],
+            },
+        )
+
+        evidence = self.detector.detect(signed_steam)
+
+        self.assertEqual(len(evidence), 1)
+        self.assertEqual(evidence[0].category, "process_tamper")
+
     def test_overlay_needs_both_geometry_and_style_combination(self) -> None:
         event = observation(
             "window_overlap",

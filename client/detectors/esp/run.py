@@ -106,6 +106,9 @@ def run_headless(controller: AntiEspController, duration: float | None) -> int:
     previous: tuple[object, ...] | None = None
     try:
         while duration is None or time.monotonic() - started < duration:
+            failure = controller.fatal_error
+            if failure is not None:
+                raise RuntimeError(f"ESP collector stopped after fatal error: {failure}")
             snapshot = controller.snapshot()
             current = (
                 snapshot["suspicion_score"],
@@ -121,6 +124,9 @@ def run_headless(controller: AntiEspController, duration: float | None) -> int:
         pass
     finally:
         controller.stop()
+    failure = controller.fatal_error
+    if failure is not None:
+        raise RuntimeError(f"ESP collector stopped after fatal error: {failure}")
     return 0
 
 

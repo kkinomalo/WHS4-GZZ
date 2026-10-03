@@ -11,7 +11,7 @@ This module reports facts only.  Access masks such as ``VM_READ`` and
 ``VM_WRITE`` are retained for a detector to interpret later; their presence is
 not labelled as cheating here.  A first successful poll establishes a
 baseline, while newly appearing handles are emitted immediately and persistent
-handles are re-emitted only after a configurable cooldown.
+handles are not re-emitted unless their observable state changes.
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, runtime_checkable
 
 from ..core.context import SensorContext
 from ..core.events import SensorBatch, SensorEvent
+from .process_relationships import is_steam_launch_parent_access
 
 
 SYSTEM_EXTENDED_HANDLE_INFORMATION = 64
@@ -582,14 +583,17 @@ class WindowsHandleInventoryProvider:
 def _record_key(
     record: ProcessHandleRecord,
     subject_id: str,
-) -> tuple[str, int, int, int, int]:
+) -> tuple[str, int, int, int]:
     return (
         subject_id,
         record.source_pid,
         record.source_handle_value,
         record.target_pid,
-        record.granted_access,
     )
+
+
+def _record_state(record: ProcessHandleRecord) -> tuple[int, str]:
+    return (record.granted_access, (record.source_image or "").casefold())
 
 
 class CurrentProcessHandleSensor:
@@ -605,6 +609,8 @@ class CurrentProcessHandleSensor:
         cooldown_seconds: float = 30.0,
         monotonic_clock: Callable[[], float] = time.monotonic,
         source_identity_provider: Callable[[str], Mapping[str, Any]] | None = None,
+        excluded_pid_provider: Callable[[], Iterable[int]] | None = None,
+        steam_source_verifier: Callable[[str], bool] | None = None,
     ) -> None:
         if (
             isinstance(cooldown_seconds, bool)
@@ -619,16 +625,20 @@ class CurrentProcessHandleSensor:
         self._provider = enumeration_provider or WindowsHandleInventoryProvider(
             self_pid=self._self_pid
         )
+        # Retained in the public signature for configuration compatibility.
+        # Unchanged handles are now state-deduplicated for their entire lifetime.
         self._cooldown = float(cooldown_seconds)
         self._monotonic = monotonic_clock
         self._source_identity_provider = source_identity_provider
+        self._excluded_pid_provider = excluded_pid_provider
+        self._steam_source_verifier = steam_source_verifier
         self._session_id: str | None = None
         self._has_baseline = False
-        self._last_emitted: dict[tuple[str, int, int, int, int], float] = {}
+        self._active_records: dict[tuple[str, int, int, int], tuple[int, str]] = {}
 
     def reset_baseline(self) -> None:
         self._has_baseline = False
-        self._last_emitted.clear()
+        self._active_records.clear()
 
     def poll(self, context: SensorContext) -> SensorBatch:
         if not isinstance(context, SensorContext):
@@ -645,7 +655,21 @@ class CurrentProcessHandleSensor:
 
         target_pids = frozenset(context.target_by_pid)
         try:
-            snapshot = self._provider(target_pids, frozenset({self._self_pid}))
+            registered_pids = frozenset(
+                int(pid)
+                for pid in (
+                    self._excluded_pid_provider()
+                    if self._excluded_pid_provider is not None
+                    else ()
+                )
+                if int(pid) > 0
+            )
+        except Exception:
+            registered_pids = frozenset()
+        try:
+            snapshot = self._provider(
+                target_pids, registered_pids | frozenset({self._self_pid})
+            )
             if not isinstance(snapshot, HandleInventorySnapshot):
                 raise TypeError("enumeration provider returned an invalid snapshot")
         except HandleInventoryUnavailable as exc:
@@ -678,26 +702,28 @@ class CurrentProcessHandleSensor:
             record
             for record in snapshot.records
             if record.target_pid in target_by_pid
-            and record.source_pid not in (_SYSTEM_PIDS | {self._self_pid})
+            and record.source_pid
+            not in (_SYSTEM_PIDS | {self._self_pid} | set(registered_pids))
             and record.source_pid != record.target_pid
             and bool(record.granted_access & WATCHED_PROCESS_ACCESS)
         )
-        monotonic_now = self._monotonic()
         details = snapshot.details()
         details["filtered_record_count"] = len(valid_records)
+        details["excluded_anticheat_pid_count"] = len(registered_pids)
 
         keyed = {
             _record_key(record, target_by_pid[record.target_pid].subject_id): record
             for record in valid_records
         }
         active_keys = set(keyed)
-        for stale_key in set(self._last_emitted) - active_keys:
-            self._last_emitted.pop(stale_key, None)
+        for stale_key in set(self._active_records) - active_keys:
+            self._active_records.pop(stale_key, None)
 
         if not self._has_baseline:
             self._has_baseline = True
-            for key in active_keys:
-                self._last_emitted[key] = monotonic_now
+            self._active_records = {
+                key: _record_state(record) for key, record in keyed.items()
+            }
             details.update(
                 {
                     "baseline_created": True,
@@ -717,12 +743,36 @@ class CurrentProcessHandleSensor:
         deduplicated = 0
         for key in sorted(keyed):
             record = keyed[key]
-            last = self._last_emitted.get(key)
-            if last is not None and monotonic_now - last < self._cooldown:
+            state = _record_state(record)
+            previous = self._active_records.get(key)
+            steam_source_verified = False
+            if (
+                previous is None
+                and self._steam_source_verifier is not None
+                and record.source_image
+            ):
+                try:
+                    steam_source_verified = bool(
+                        self._steam_source_verifier(record.source_image)
+                    )
+                except Exception:
+                    steam_source_verified = False
+            if previous is None and is_steam_launch_parent_access(
+                target=target_by_pid[record.target_pid],
+                source_pid=record.source_pid,
+                source_image=record.source_image,
+                granted_access=record.granted_access,
+                observed_at=snapshot.observed_at,
+                source_verified=steam_source_verified,
+            ):
+                self._active_records[key] = state
                 deduplicated += 1
                 continue
-            observation_kind = "new" if last is None else "periodic"
-            self._last_emitted[key] = monotonic_now
+            if previous == state:
+                deduplicated += 1
+                continue
+            observation_kind = "new" if previous is None else "changed"
+            self._active_records[key] = state
             target = target_by_pid[record.target_pid]
             identity: dict[str, Any] = {}
             if self._source_identity_provider is not None and record.source_image:
@@ -750,6 +800,9 @@ class CurrentProcessHandleSensor:
                             "SystemExtendedHandleInformation"
                         ),
                         "observation_kind": observation_kind,
+                        "previous_granted_access": (
+                            previous[0] if previous is not None else None
+                        ),
                         "source_pid": record.source_pid,
                         "source_image": record.source_image,
                         "source_handle_value": record.source_handle_value,

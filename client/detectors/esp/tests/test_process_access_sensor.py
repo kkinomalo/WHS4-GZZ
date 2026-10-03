@@ -128,6 +128,153 @@ class ProcessAccessSensorTests(unittest.TestCase):
         )
         self.assertEqual(sensor.poll(self.context).events, ())
 
+    def test_registered_anticheat_pid_is_excluded(self):
+        sensor = SysmonProcessAccessSensor(
+            poller=FakePoller(ready(record(source_process_id=300))),
+            self_pid=999,
+            excluded_pid_provider=lambda: frozenset({300}),
+        )
+
+        batch = sensor.poll(self.context)
+
+        self.assertEqual(batch.events, ())
+        self.assertEqual(batch.details["excluded_anticheat_pid_count"], 1)
+
+    def test_steam_exception_requires_verified_parent_full_access_and_launch_time(self):
+        context = SensorContext(
+            "esp_001",
+            (
+                ProcessTarget(
+                    77,
+                    r"C:\Game\game.exe",
+                    created_at=100.0,
+                    parent_pid=22,
+                    parent_created_at=50.0,
+                    parent_executable_path=r"C:\Program Files (x86)\Steam\steam.exe",
+                ),
+            ),
+            session_started_at=90.0,
+            observed_at=121.0,
+        )
+        steam = r"C:\Program Files (x86)\Steam\steam.exe"
+        full_access = 0x0002 | 0x0008 | 0x0010 | 0x0020 | 0x0040
+        sensor = SysmonProcessAccessSensor(
+            poller=FakePoller(
+                ready(
+                    record(
+                        record_id=1,
+                        source_process_id=22,
+                        source_image=steam,
+                        granted_access=full_access,
+                        timestamp=101.0,
+                    ),
+                    record(
+                        record_id=2,
+                        source_process_id=23,
+                        source_image=steam,
+                        granted_access=full_access,
+                        timestamp=101.0,
+                    ),
+                    record(
+                        record_id=3,
+                        source_process_id=22,
+                        source_image=steam,
+                        granted_access=full_access,
+                        timestamp=120.0,
+                    ),
+                    record(
+                        record_id=4,
+                        source_process_id=22,
+                        source_image=steam,
+                        granted_access=0x10,
+                        timestamp=101.0,
+                    ),
+                    record(
+                        record_id=5,
+                        source_process_id=22,
+                        source_image=r"C:\Fake\steam.exe",
+                        granted_access=full_access,
+                        timestamp=101.0,
+                    ),
+                )
+            ),
+            self_pid=999,
+            steam_source_verifier=lambda path: path == steam,
+        )
+
+        events = sensor.poll(context).events
+
+        self.assertEqual([event.sequence for event in events], [2, 3, 4, 5])
+
+    def test_unverified_renamed_steam_parent_is_not_excluded(self):
+        fake_steam = r"C:\Temp\steam.exe"
+        context = SensorContext(
+            "esp_001",
+            (
+                ProcessTarget(
+                    77,
+                    r"C:\Game\game.exe",
+                    created_at=100.0,
+                    parent_pid=22,
+                    parent_created_at=50.0,
+                    parent_executable_path=fake_steam,
+                ),
+            ),
+            session_started_at=90.0,
+            observed_at=101.0,
+        )
+        sensor = SysmonProcessAccessSensor(
+            poller=FakePoller(
+                ready(
+                    record(
+                        source_process_id=22,
+                        source_image=fake_steam,
+                        granted_access=0x3A,
+                        timestamp=101.0,
+                    )
+                )
+            ),
+            self_pid=999,
+            steam_source_verifier=lambda _path: False,
+        )
+
+        events = sensor.poll(context).events
+
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0].payload["source_image"], fake_steam)
+
+    def test_reused_steam_parent_pid_is_not_excluded(self):
+        context = SensorContext(
+            "esp_001",
+            (
+                ProcessTarget(
+                    77,
+                    r"C:\Game\game.exe",
+                    created_at=100.0,
+                    parent_pid=22,
+                    parent_created_at=110.0,
+                    parent_executable_path=r"C:\Steam\steam.exe",
+                ),
+            ),
+            session_started_at=90.0,
+            observed_at=111.0,
+        )
+        sensor = SysmonProcessAccessSensor(
+            poller=FakePoller(
+                ready(
+                    record(
+                        source_process_id=22,
+                        source_image=r"C:\Steam\steam.exe",
+                        granted_access=0x3A,
+                        timestamp=101.0,
+                    )
+                )
+            ),
+            self_pid=999,
+        )
+
+        self.assertEqual(len(sensor.poll(context).events), 1)
+
     def test_unavailable_and_error_are_not_healthy_empty(self):
         unavailable = SysmonPollResult(
             SysmonStatus(False, False, False, "not_installed", "missing")

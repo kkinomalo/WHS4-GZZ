@@ -23,6 +23,9 @@ class ProcessTarget:
     pid: int
     executable_path: str
     created_at: float | None = None
+    parent_pid: int | None = None
+    parent_created_at: float | None = None
+    parent_executable_path: str | None = None
 
     def __post_init__(self) -> None:
         if isinstance(self.pid, bool) or not isinstance(self.pid, int) or self.pid <= 0:
@@ -33,6 +36,32 @@ class ProcessTarget:
         if self.created_at is not None:
             object.__setattr__(
                 self, "created_at", _finite_time("created_at", self.created_at)
+            )
+        if self.parent_pid is not None:
+            if (
+                isinstance(self.parent_pid, bool)
+                or not isinstance(self.parent_pid, int)
+                or self.parent_pid <= 0
+            ):
+                raise ValueError("parent_pid must be a positive integer or None")
+        if self.parent_created_at is not None:
+            object.__setattr__(
+                self,
+                "parent_created_at",
+                _finite_time("parent_created_at", self.parent_created_at),
+            )
+            if self.parent_pid is None:
+                raise ValueError("parent_created_at requires parent_pid")
+        if self.parent_executable_path is not None:
+            if (
+                not isinstance(self.parent_executable_path, str)
+                or not self.parent_executable_path.strip()
+            ):
+                raise ValueError("parent_executable_path must be non-empty or None")
+            if self.parent_pid is None:
+                raise ValueError("parent_executable_path requires parent_pid")
+            object.__setattr__(
+                self, "parent_executable_path", self.parent_executable_path.strip()
             )
 
     @property
