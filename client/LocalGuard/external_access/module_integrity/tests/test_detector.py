@@ -44,7 +44,7 @@ class ModuleIntegrityDetectorTests(unittest.TestCase):
                 "raw_score",
             },
         )
-        self.assertEqual(result["module"], "external_access")
+        self.assertEqual(result["module"], "module_integrity")
         self.assertEqual(result["evidence"]["submodule"], "module_integrity")
         self.assertEqual(result["evidence"]["status"], "SUSPICIOUS")
         self.assertEqual(result["evidence"]["submodule"], "module_integrity")

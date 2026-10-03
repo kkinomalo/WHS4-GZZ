@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import signal
 import sys
 import time
@@ -27,7 +28,11 @@ from ..common import (
     append_detection_jsonl,
     build_detection_result,
 )
-from .allowlist import ModuleAllowlist
+from .allowlist import (
+    DEFAULT_SELF_HOOK_MANIFEST_PATH,
+    DEFAULT_UE4SS_MANIFEST_PATH,
+    ModuleAllowlist,
+)
 from .baseline import ModuleBaselineTracker
 from .detector import ModuleIntegrityDetector
 from .models import (
@@ -54,8 +59,10 @@ def _configure_shared_client() -> bool:
 
 
 def _write_local_and_send(path: Path, result: Dict[str, Any]) -> None:
-    """Persist the exact seven-field result before queueing it for delivery."""
+    """로컬에는 모두 남기고 양수 탐지만 중앙 전송 outbox에 넣는다."""
     append_detection_jsonl(path, result)
+    if result["raw_score"] <= 0:
+        return
     try:
         receipt = send_detection(result)
     except SharedError as error:
@@ -76,6 +83,61 @@ def _finish_shared_client() -> None:
         print(f"[shared] shutdown complete={stopped}")
     except SharedError as error:
         print(f"[shared] shutdown failed: {type(error).__name__}")
+
+
+def _default_ue4ss_manifest_path() -> Path:
+    configured = os.environ.get("GZZ_UE4SS_MANIFEST", "").strip()
+    return Path(configured) if configured else DEFAULT_UE4SS_MANIFEST_PATH
+
+
+def _default_game_root() -> Optional[Path]:
+    configured = os.environ.get("GZZ_GAME_ROOT", "").strip()
+    return Path(configured) if configured else None
+
+
+def _default_self_hook_manifest_path() -> Path:
+    configured = os.environ.get("GZZ_SELF_HOOK_MANIFEST", "").strip()
+    return Path(configured) if configured else DEFAULT_SELF_HOOK_MANIFEST_PATH
+
+
+def _load_allowlists(
+    static_path: Path,
+    ue4ss_manifest_path: Path,
+    trusted_game_root: Optional[Path],
+    self_hook_manifest_path: Path = DEFAULT_SELF_HOOK_MANIFEST_PATH,
+    trusted_repository_root: Path = REPOSITORY_ROOT,
+) -> tuple[ModuleAllowlist, bool]:
+    """정적 목록, UE4SS DLL, 자체 관측 후크의 정확한 해시를 합친다.
+
+    두 번째 반환값은 정적 검토 목록이 있어 초기 스냅샷 감사를 자동으로 켜도
+    되는지를 나타낸다. PC별 UE4SS 예외만으로 초기 감사를 켜면 정상 시스템 DLL
+    전체가 미검토 항목으로 기록되므로 동적 항목은 자동 활성화 조건에서 제외한다.
+    """
+    try:
+        reviewed = ModuleAllowlist.from_json(static_path)
+    except (OSError, UnicodeError, ValueError) as error:
+        print(f"[module_integrity] static allowlist unavailable: {type(error).__name__}")
+        reviewed = ModuleAllowlist()
+    ue4ss = (
+        ModuleAllowlist.from_ue4ss_manifest(
+            ue4ss_manifest_path,
+            trusted_game_root=trusted_game_root,
+        )
+        if trusted_game_root is not None
+        else ModuleAllowlist()
+    )
+    self_hooks = ModuleAllowlist.from_self_hook_manifest(
+        self_hook_manifest_path,
+        trusted_repository_root=trusted_repository_root,
+    )
+    if ue4ss.entries:
+        print(f"[module_integrity] loaded UE4SS DLL exceptions: {len(ue4ss.entries)}")
+    if self_hooks.entries:
+        print(
+            "[module_integrity] loaded anti-cheat observer hook exceptions: "
+            f"{len(self_hooks.entries)}"
+        )
+    return reviewed.merged(ue4ss, self_hooks), bool(reviewed.entries)
 
 
 @dataclass(frozen=True)
@@ -348,7 +410,7 @@ class ModuleIntegrityRunner:
         result = build_detection_result(
             session_id=self._session_id,
             player_id=self._player_id,
-            module="external_access",
+            module="module_integrity",
             timestamp_ms=scan_end_ms,
             evidence=evidence,
             reasons=[],
@@ -535,6 +597,24 @@ def main() -> None:
         type=Path,
         default=Path(__file__).with_name("allowlist.json"),
     )
+    parser.add_argument(
+        "--ue4ss-manifest",
+        type=Path,
+        default=_default_ue4ss_manifest_path(),
+        help="런처가 생성한 PC별 UE4SS 설치 해시 manifest",
+    )
+    parser.add_argument(
+        "--game-root",
+        type=Path,
+        default=_default_game_root(),
+        help="런처가 게임 프로세스와 별도로 확인한 설치 root",
+    )
+    parser.add_argument(
+        "--self-hook-manifest",
+        type=Path,
+        default=_default_self_hook_manifest_path(),
+        help="런처가 시작 전에 생성한 안티치트 자체 관측 후크 해시 manifest",
+    )
     parser.add_argument("--once", action="store_true")
     initial_audit = parser.add_mutually_exclusive_group()
     initial_audit.add_argument(
@@ -557,14 +637,26 @@ def main() -> None:
 
     shared_ready = _configure_shared_client()
     try:
+        allowlist, auto_initial_audit = _load_allowlists(
+            args.allowlist,
+            args.ue4ss_manifest,
+            args.game_root,
+            args.self_hook_manifest,
+            REPOSITORY_ROOT,
+        )
+        audit_initial_snapshot = (
+            auto_initial_audit
+            if args.audit_initial_snapshot is None
+            else args.audit_initial_snapshot
+        )
         runner = ModuleIntegrityRunner(
             game_executable_name=args.game_exe,
             game_pid=args.game_pid,
             session_id=args.session_id,
             player_id=args.player_id,
             output_path=args.output,
-            allowlist=ModuleAllowlist.from_json(args.allowlist),
-            audit_initial_snapshot=args.audit_initial_snapshot,
+            allowlist=allowlist,
+            audit_initial_snapshot=audit_initial_snapshot,
             writer=_write_local_and_send if shared_ready else append_detection_jsonl,
             session_t0=args.t0,
             emit_status_events=True,

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-from . import aimbot, autopaint, godmode, noclip
+from . import aimbot, autopaint, esp, godmode, localguard, noclip
 from .contract import PolicyEvaluation, PolicyRegistry
 
 
@@ -25,6 +25,8 @@ def build_default_registry() -> PolicyRegistry:
     registry.register("aimbot", aimbot.evaluate)
     registry.register("autopaint", autopaint.evaluate)
     registry.register("godmode", godmode.evaluate)
+    registry.register("esp", esp.evaluate)
+    registry.register("module_integrity", localguard.evaluate)
     return registry
 
 

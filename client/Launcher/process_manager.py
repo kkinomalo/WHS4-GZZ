@@ -155,6 +155,7 @@ class ProcessManager:
             # 런처가 찾은 게임 실행 폴더(main.publish_game_dir 가 채운다). UE4SS 모드
             # 로그처럼 게임 폴더 아래 파일을 읽는 모듈에 넘긴다. 못 찾았으면 기본값.
             "game_bin": os.environ.get("GZZ_GAME_BIN") or GAME_DIR,
+            "game_root": os.environ.get("GZZ_GAME_ROOT") or "",
             # 중앙 서버 설정이 있을 때만 전송한다. 없으면 로컬 기록만.
             "telemetry": "managed" if os.environ.get("GZZ_TELEMETRY_URL") else "off",
         }

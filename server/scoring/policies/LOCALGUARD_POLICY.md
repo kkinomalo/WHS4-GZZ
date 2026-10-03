@@ -12,7 +12,7 @@
 | module / evidence.submodule | 의미 | entity_key |
 |---|---|---|
 | external_access / external_process | 외부 프로세스의 위험 핸들 관측 | 양수·유효 PID인 경우 `external_process:<source_pid>` |
-| external_access / module_integrity | DLL 추가·매핑 변경·초기 기준선 감사 | 양수·알려진 변화·유효 PID/절대 Windows 경로인 경우 `game_module:<target_pid>:<경로 SHA-256>` |
+| module_integrity / module_integrity | DLL 추가·매핑 변경·초기 기준선 감사 | 양수·알려진 변화·유효 PID/절대 Windows 경로인 경우 `game_module:<target_pid>:<경로 SHA-256>` |
 | 실패 관측·0점·미분류 채널 | 정상·위험 해소로 자동 변환하지 않음 | 없음 |
 
 - 핸들 채널은 팀 main `bd66c6524b6dc8d50ded0c052191a70c8b4acf7c`의
@@ -27,9 +27,9 @@
 - DLL 키의 SHA-256은 정규화된 **경로 문자열**을 짧게 표현하는 수단임.
   파일 바이트 해시·악성 신뢰 판정·개별 DLL 로드 사건 ID로 사용하지 않음.
   경로를 실제 열거나 서버의 파일 시스템에서 조회하지 않음.
-- 같은 이름 `external_access`를 쓰는 두 하위 채널은 최신 module 상태를
-  덮어쓸 수 있음. annotations의 entity_key를 붙여도 SQLite 저장 구조가
-  바뀌는 것은 아님. submodule 저장 분리·변화 이력은 B와 합의 필요함.
+- 신규 DLL 이벤트는 `module_integrity`를 사용해 `external_access` 핸들 상태와
+  최신 module 저장 키를 분리함. 과거 `external_access/module_integrity`
+  이벤트는 읽기 호환만 유지함.
 - overlap_tags는 합의 전까지 빈 tuple임. PID/경로의 일치만으로 중복 탐지를
   확정하거나 점수를 합산/감점하지 않음.
 
@@ -109,7 +109,7 @@ for module in localguard.SUPPORTED_MODULES:
 - [x] 핸들/DLL 채널 분기와 원점수·실패 상태 보존 해석을 작성함.
 - [x] YARA·해시·메모리/Runtime 9개 module의 주석·단위 테스트를 추가함.
 - [x] 기존 캡처 변환 및 최신 B 코드와의 호환성을 검사함.
-- [ ] B와 module_integrity 하위 채널 저장·조회/변화 이력을 합의해야 함.
+- [x] DLL 채널의 module 이름을 `module_integrity`로 분리해 최신 상태 충돌을 제거함.
 - [ ] B와 외부 PID 다중 대상·positive-only 만료·관측 실패 처리를 합의해야 함.
 - [ ] B와 Runtime/YARA 프로필 및 overlap_tags 계약을 맞춰야 함.
 - [ ] B 담당 기본 Registry에 연결해야 함.
@@ -131,9 +131,9 @@ Hide Anywhere와 ESP 분석 함수·테스트도 후속 커밋에서 구현함. 
 Runtime 3종의 실제 상한 5/1/1은 후속 소스에서도 확인함. 내부 0~100 등급
 범위와 실제 단일 검사 점수 상한을 구분함.
 
-external_access의 external_process/module_integrity 저장 분리는 B가 먼저
-정리하기로 함. DLL 무변화 0점은 과거 DLL 제거의 증거가 아니므로 같은 module의
-모든 대상·두 채널을 일괄 정상화하지 않음. 구체적 저장·갱신 범위는 B와 맞춤.
+external_access와 module_integrity는 별도 module 상태로 저장함. DLL 무변화
+0점은 중앙으로 보내지 않고 로컬 상태에만 남기므로, 과거 탐지를 0점으로
+덮어쓰지 않음. 변화 이력의 보존·만료 범위는 B와 계속 맞춰야 함.
 
 공통 Registry 등록·프로필·저장 구조·최종 통합은 B 담당임.
 A는 필요한 분석 함수·테스트 보완과 Receiver 연동 검증을 맡음.

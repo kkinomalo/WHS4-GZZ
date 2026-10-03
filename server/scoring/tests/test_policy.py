@@ -52,6 +52,16 @@ class PolicyDraftTests(unittest.TestCase):
         self.assertIsNone(preview.raw_fraction_pct)
         self.assertIn("source entities", " ".join(preview.issues))
 
+    def test_module_integrity_has_its_own_positive_only_profile(self):
+        preview = inspect_event(event("module_integrity", 2, {
+            "submodule": "module_integrity",
+            "target_pid": 500,
+            "module_path": "C:/Game/extra.dll",
+        }))
+        self.assertEqual(preview.emission, "positive_only")
+        self.assertEqual(preview.state, "POLICY_NOT_CALIBRATED")
+        self.assertIsNone(preview.raw_fraction_pct)
+
     def test_absent_esp_profile_is_waiting_not_zero_risk(self):
         """ESP 규격이 없다는 사실을 0 위험도로 처리하지 않는지 확인."""
         preview = inspect_event(event("esp", 1))

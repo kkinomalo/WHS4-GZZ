@@ -98,6 +98,29 @@ class ScoringStoreTests(unittest.TestCase):
         self.assertEqual([state.module for state in snapshot], ["aimbot", "noclip"])
         self.assertEqual([state.raw_score for state in snapshot], [7, 3])
 
+    def test_module_integrity_cannot_overwrite_external_access_state(self):
+        self.store.process_event(
+            event(module="external_access", raw_score=7),
+            event_id=event_id(),
+            sequence=1,
+        )
+        self.store.process_event(
+            event(module="module_integrity", timestamp_ms=2000, raw_score=2),
+            event_id=event_id(),
+            sequence=2,
+        )
+
+        external = self.store.get_module_state(
+            "session_1", "player_1", "external_access"
+        )
+        integrity = self.store.get_module_state(
+            "session_1", "player_1", "module_integrity"
+        )
+        self.assertIsNotNone(external)
+        self.assertIsNotNone(integrity)
+        self.assertEqual(external.raw_score, 7)
+        self.assertEqual(integrity.raw_score, 2)
+
     def test_live_processing_does_not_advance_recovery_cursor(self):
         """실시간 처리만으로 복구 커서가 전진하지 않는지 확인."""
         self.store.process_event(event(), event_id=event_id(), sequence=7)

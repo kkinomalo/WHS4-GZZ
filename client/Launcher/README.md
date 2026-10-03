@@ -15,11 +15,26 @@ python client/Launcher/main.py
 | `--no-launch-game` | 게임은 내가 직접 켠다. 뜰 때까지 기다리기만 |
 | `--wait-game SEC` | 게임을 기다리는 시간 (기본 180초) |
 | `--status-every SEC` | 상태 화면 간격 (기본 10초) |
+| `--self-hook DLL` | 이번 세션에 명시적으로 사용할 승인된 안티치트 관측 후크 |
 
 커널 모듈을 쓰려면 **관리자 권한**으로 실행해야 한다. 아니면 그 모듈만 건너뛴다.
 
 에임봇·오토페인트·노클립·갓모드 탐지기는 UE4SS 위에서 돈다. 런처가 그걸 어떻게 깔고
 확인할지는 **[UE4SS.md](UE4SS.md)** 에 따로 정리했다(동효님 담당, 은지·성민님 요구사항 반영).
+
+휘파람 탐지기의 `ac_whistle_v10.dll`은 게임 안에 의도적으로 넣는 안티치트 관측
+후크라서 module_integrity가 핵 DLL로 오인하면 안 된다. 사용할 파일을 Launcher의
+`--self-hook DLL`로 명시하면 게임 관련 모듈을 띄우기 직전에
+`logs/self_hook_manifest.json`을 새로 만들고, 그 절대 경로와 SHA-256을 기록한다.
+경로를 자동 검색하지 않으며 현재 검토된 v10의 정확한 빌드 출력 경로만 받는다.
+UE4SS의 신뢰 루트는 게임 폴더이고
+이 후크의 신뢰 루트는 현재 안티치트 checkout이므로 두 manifest는 합치지 않는다.
+공격 실험용 `modules/whistle-spoofing/bin/`과 임의 버전 DLL은 승인 대상이 아니다.
+
+```powershell
+python client/Launcher/main.py --self-hook `
+  "client/detectors/whistle-spoofing/native/whistle_hook/bin/Release/ac_whistle_v10.dll"
+```
 
 ---
 

@@ -1,3 +1,5 @@
 __pycache__/
 *.py[cod]
 /logs/
+/client/Launcher/logs/
+/client/LocalGuard/external_access/logs/

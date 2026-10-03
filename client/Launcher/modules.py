@@ -153,6 +153,7 @@ MODULES: List[Module] = [
               "--t0", "{t0}",
               "--output", "client/LocalGuard/external_access/logs/module_integrity.jsonl"],
         mode=CONTINUOUS,
+        optional_paths=[("--game-root", "{game_root}")],
         note="게임 DLL 기준선·추가·변경 감시. shared 0.2.0 공통 이벤트 전송",
     ),
     Module(

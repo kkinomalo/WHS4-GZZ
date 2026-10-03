@@ -1,4 +1,5 @@
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -20,6 +21,7 @@ from client.LocalGuard.external_access.module_integrity.module_sensor import (
 )
 from client.LocalGuard.external_access.module_integrity.runner import (
     ModuleIntegrityRunner,
+    _load_allowlists,
 )
 from client.LocalGuard.external_access.module_integrity import runner as runner_module
 from shared.schema import decode_event, encode_event
@@ -83,7 +85,7 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
         self.assertFalse(report.game_found)
         self.assertEqual(len(saved), 1)
         self.assertEqual(saved[0]["timestamp_ms"], 10_000)
-        self.assertEqual(saved[0]["module"], "external_access")
+        self.assertEqual(saved[0]["module"], "module_integrity")
         self.assertEqual(saved[0]["evidence"]["submodule"], "module_integrity")
         self.assertEqual(saved[0]["evidence"]["status"], "OFFLINE")
         self.assertEqual(decode_event(encode_event(saved[0])), saved[0])
@@ -92,7 +94,7 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
         event = {
             "session_id": "esp_001",
             "player_id": "player_042",
-            "module": "external_access",
+            "module": "module_integrity",
             "timestamp_ms": 1234,
             "evidence": {
                 "submodule": "module_integrity",
@@ -116,6 +118,117 @@ class ModuleIntegrityRunnerTests(unittest.TestCase):
 
             with patch.object(runner_module, "send_detection", side_effect=fake_send):
                 runner_module._write_local_and_send(output, event)
+
+    def test_zero_status_events_are_local_only(self):
+        for status in ("NORMAL", "OFFLINE", "ERROR"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as directory:
+                output = Path(directory) / "events.jsonl"
+                event = {
+                    "session_id": "normal_001",
+                    "player_id": "player_042",
+                    "module": "module_integrity",
+                    "timestamp_ms": 1234,
+                    "evidence": {
+                        "submodule": "module_integrity",
+                        "status": status,
+                    },
+                    "reasons": [],
+                    "raw_score": 0,
+                }
+                with patch.object(runner_module, "send_detection") as send:
+                    runner_module._write_local_and_send(output, event)
+
+                self.assertIn(
+                    f'"status":"{status}"',
+                    output.read_text(encoding="utf-8"),
+                )
+                send.assert_not_called()
+
+    def test_dynamic_ue4ss_exceptions_do_not_enable_initial_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            game_root = root / "game"
+            dll = game_root / "Chameleon" / "Binaries" / "Win64" / "dwmapi.dll"
+            dll.parent.mkdir(parents=True)
+            dll.write_bytes(b"reviewed proxy")
+            digest = hashlib.sha256(dll.read_bytes()).hexdigest()
+            static = root / "allowlist.json"
+            static.write_text('{"entries":[]}', encoding="utf-8")
+            manifest = root / "ue4ss_install.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "game_root": str(game_root),
+                        "files": {
+                            "Chameleon/Binaries/Win64/dwmapi.dll": digest,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            allowlist, auto_initial_audit = _load_allowlists(
+                static,
+                manifest,
+                game_root,
+            )
+
+        self.assertFalse(auto_initial_audit)
+        self.assertIsNotNone(
+            allowlist.find("dwmapi.dll", digest, module_path=dll.resolve())
+        )
+
+    def test_self_hook_exceptions_are_merged_without_enabling_initial_audit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            hook = (
+                root
+                / "client"
+                / "detectors"
+                / "whistle-spoofing"
+                / "native"
+                / "whistle_hook"
+                / "bin"
+                / "Release"
+                / "ac_whistle_v10.dll"
+            )
+            hook.parent.mkdir(parents=True)
+            hook.write_bytes(b"reviewed observer hook")
+            digest = hashlib.sha256(hook.read_bytes()).hexdigest()
+            static = root / "allowlist.json"
+            static.write_text('{"entries":[]}', encoding="utf-8")
+            ue4ss = root / "missing-ue4ss.json"
+            self_hooks = root / "self_hook_manifest.json"
+            self_hooks.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "repository_root": str(root),
+                        "hooks": [
+                            {
+                                "role": "whistle_observer",
+                                "path": str(hook.resolve()),
+                                "sha256": digest,
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            allowlist, auto_initial_audit = _load_allowlists(
+                static,
+                ue4ss,
+                None,
+                self_hooks,
+                root,
+            )
+
+            self.assertFalse(auto_initial_audit)
+            self.assertIsNotNone(
+                allowlist.find(hook.name, digest, module_path=hook.resolve())
+            )
 
     def test_initial_snapshot_can_be_strictly_audited(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -63,6 +63,8 @@ _PROFILE_ITEMS = (
                     True, "Three-point pattern, or up to two one-point auxiliary signals."),
     DetectorProfile("external_access", "client/LocalGuard/external_access/process_access/detector.py", "per_entity_positive_only", 10,
                     False, "Each event can refer to a different source process/handle."),
+    DetectorProfile("module_integrity", "client/LocalGuard/external_access/module_integrity/detector.py", "positive_only", 3,
+                    False, "DLL changes are stored separately from external process-handle state; zero status events stay local."),
     DetectorProfile("localguard_executable_hash", "client/LocalGuard/input_signature/hash_monitor.py", "positive_only", 1,
                     False, "Presence of exact known EXE hash is not proof of activation."),
     DetectorProfile("localguard_yara", "client/LocalGuard/input_signature/yara_scanner.py", "per_entity_positive_only", 3,

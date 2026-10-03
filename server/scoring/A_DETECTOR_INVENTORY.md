@@ -279,7 +279,7 @@ RPC 별도 측정 예시는 `client/detectors/whistle-spoofing/measurements/rpc_
 `rpc_pi_002.jsonl:1`이며 분석 테스트에서만 Shared 7필드로 포장하여 검사함.
 원본 캡처를 수정하거나 해당 폴더 전체를 정상 라벨로 판정하지 않음.
 
-### 9.3 현재 A 분석 대상: 정확한 module 14개
+### 9.3 현재 A 분석 대상: 정확한 module 15개
 
 아래 전송 특성은 참조한 코드 및 담당자 답변에서 확인한 동작임.
 9.4절의 새 전송 합의가 모든 탐지기에 이미 반영됐다는 뜻은 아님.
@@ -287,7 +287,7 @@ RPC 별도 측정 예시는 `client/detectors/whistle-spoofing/measurements/rpc_
 | 실제 module / 구분 | raw_score 의미·상한 | 관측·전송 특성 및 중앙 분석 시 주의점 |
 |---|---|---|
 | external_access / external_process | 위험 핸들 보조 근거 합계, 최대 10 | 외부 프로세스별 양수 관측. 다중 PID를 최신 module 한 건으로 축약하지 않음 |
-| external_access / module_integrity | 변화 기본 1 + 미서명 1 / invalid 2, 최대 3 | PR #78의 DLL 변화 채널. 정상·오류 0점도 생성하며 같은 module의 핸들 채널과 저장 키가 충돌할 수 있음 |
+| module_integrity / module_integrity | 변화 기본 1 + 미서명 1 / invalid 2, 최대 3 | DLL 변화 채널. 양수 탐지만 중앙 전송하며 0점 상태는 로컬에 남김. external_access와 저장 키를 분리함 |
 | localguard_yara | 매칭 규칙 점수의 최댓값. 기본 3, 사용자 규칙 1~10 | 현 전송 경로는 양수만. 규칙·scope·부분 검사·테스트 규칙을 보존함 |
 | localguard_executable_hash | 일치 있으면 1, 없으면 0 | 현 전송 경로는 양수만. 여러 실행 파일 목록을 대표 PID 하나로 축약하지 않음 |
 | filesystem | 파일 흔적별 점수, 상한 100 | 현재 상태/흔적 관측이며 활성 핵 실행의 증명은 아님 |
@@ -302,7 +302,7 @@ RPC 별도 측정 예시는 `client/detectors/whistle-spoofing/measurements/rpc_
 | hide_anywhere | 패턴 3, 비패턴일 때 보조 신호 합계 0~2 | 반복 값 평가임. 최신 읽기 성공·3회 확인 완료를 세 플래그만으로 증명하지 못함 |
 | esp | 개별 근거 1/2/3. 연결 근거 확장 시 합계가 3 초과할 수 있음 | 양수 관측 스트림. 로컬 0~100 의심도와 다르며 정상 0점 snapshot을 항상 생성하지 않음 |
 
-external_access 두 행은 같은 module의 하위 채널이므로 별개 module로 세지 않음.
+external_access와 module_integrity는 서로 다른 중앙 module 상태로 저장함.
 상세한 점수 근거·대상 범위·테스트 경로는 다음 문서에 정리함.
 
 - [LocalGuard 분석](policies/LOCALGUARD_POLICY.md)
@@ -332,8 +332,8 @@ external_access 두 행은 같은 module의 하위 채널이므로 별개 module
    정상 0점은 해당 관측 범위의 현재 상태를 갱신하며 과거 탐지 history는 보존함.
 5. whistle_rpc는 새 로그 구간의 이력으로 다루고 현재 risk에는 유효 구간 동안 반영하는 방향임.
    구체적 유효 시간·로그 cursor·실제 주기·재시작 중복 기준은 아직 미확정임.
-6. external_access의 핸들/DLL 채널 덮어쓰기 문제는 B가 submodule 저장 구조부터 정리하기로 함.
-   A의 entity_key만으로 저장 문제가 해결되는 것은 아님.
+6. 핸들/DLL 채널은 각각 external_access/module_integrity 이름을 사용해 최신값
+   덮어쓰기를 제거함. 과거 형식은 읽기 호환만 유지함.
 
 위 합의는 운영 반영 완료 보고가 아님. 전송 필터 변경과 서버 수신 검증이 필요함.
 ESP의 양수 관측 스트림이나 DLL 변화 채널의 무변화 0점에 일반 상태형 초기화 규칙을

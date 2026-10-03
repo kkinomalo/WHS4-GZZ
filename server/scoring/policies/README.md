@@ -89,8 +89,11 @@ print(result.signal, result.annotations)
 - `noclip` -> `noclip.evaluate`
 - `aimbot` -> `aimbot.evaluate`
 - `autopaint` -> `autopaint.evaluate`
+- `godmode` -> `godmode.evaluate`
+- `esp` -> `esp.evaluate`
+- `module_integrity` -> `localguard.evaluate`
 
-Godmode와 A 담당 탐지기 정책은 구현/검증이 끝난 뒤 같은 Registry에 추가합니다.
+나머지 A 담당 탐지기 정책은 구현/검증이 끝난 뒤 같은 Registry에 추가합니다.
 등록되지 않은 모듈은 임의의 정상 상태로 처리하지 않고 기존 B2a 분석 결과만
 그대로 반환합니다.
 

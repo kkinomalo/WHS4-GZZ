@@ -85,6 +85,41 @@ class DefaultPolicyRegistryTests(unittest.TestCase):
             " ".join(result.annotations.notes),
         )
 
+    def test_module_integrity_routes_to_localguard_policy(self):
+        result = evaluate_event_policy(event(
+            "module_integrity",
+            2,
+            evidence={
+                "submodule": "module_integrity",
+                "status": "SUSPICIOUS",
+                "target_pid": 500,
+                "module_path": r"C:\Game\observer.dll",
+                "change_type": "added",
+            },
+            reasons=["New DLL Loaded After Baseline"],
+        ))
+        self.assertEqual(result.signal.module, "module_integrity")
+        self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
+        self.assertIn("별도 저장", " ".join(result.annotations.notes))
+
+    def test_esp_routes_through_public_scoring_entrypoint(self):
+        result = evaluate_event_policy(event(
+            "esp",
+            2,
+            evidence={
+                "sensor_event_id": "sensor-event-001",
+                "event_type": "process_access",
+                "categories": ["memory_read"],
+                "source_pid": 900,
+                "target_pid": 500,
+            },
+            reasons=["external process opened the game with VM_READ"],
+        ))
+        self.assertEqual(result.signal.module, "esp")
+        self.assertEqual(result.signal.state, "AWAITING_DETECTOR")
+        self.assertEqual(result.annotations.entity_key, "external_process:900")
+        self.assertIn("메모리 읽기 권한 관측", " ".join(result.annotations.notes))
+
 
 if __name__ == "__main__":
     unittest.main()

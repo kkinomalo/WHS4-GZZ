@@ -27,13 +27,13 @@ from shared.errors import ValidationError
 from shared.schema import decode_event, encode_event, validate_event_id
 
 MODULES = (
-    "external_access", "localguard_yara", "localguard_executable_hash",
+    "external_access", "module_integrity", "localguard_yara", "localguard_executable_hash",
     "filesystem", "injection", "value_tamper", "overlay_hook",
     "godmode_runtime", "noclip_runtime", "aimbot_runtime",
     "whistle", "whistle_rpc", "hide_anywhere",
 )
 EXTENDED_MODULES = set(MODULES) - {
-    "external_access", "localguard_yara", "localguard_executable_hash", "hide_anywhere",
+    "external_access", "module_integrity", "localguard_yara", "localguard_executable_hash", "hide_anywhere",
 }
 
 

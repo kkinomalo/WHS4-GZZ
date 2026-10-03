@@ -190,7 +190,7 @@ def run_smoke_test(output_path: Path | None = None) -> tuple[Path, dict[str, Any
             for event in _new_events(output_path, previous_size)
             if event.get("session_id") == "module_smoke_001"
             and event.get("player_id") == "local_test"
-            and event.get("module") == "external_access"
+            and event.get("module") == "module_integrity"
             and event.get("evidence", {}).get("submodule") == "module_integrity"
             and event.get("evidence", {}).get("change_type") == "added"
             and event.get("evidence", {}).get("target_pid") == helper.pid

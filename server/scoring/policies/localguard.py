@@ -12,7 +12,7 @@ from .contract import PolicyAnnotations
 
 
 SUPPORTED_MODULES = (
-    "external_access", "localguard_yara", "localguard_executable_hash",
+    "external_access", "module_integrity", "localguard_yara", "localguard_executable_hash",
     "filesystem", "injection", "value_tamper", "overlay_hook",
     "godmode_runtime", "noclip_runtime", "aimbot_runtime",
 )
@@ -98,7 +98,14 @@ def _module_scope(evidence: Mapping[str, Any]) -> str | None:
 def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
     evidence = event["evidence"]
     submodule = evidence.get("submodule")
-    notes.append("external_access는 핸들 관측과 DLL 변화의 혼합 스트림이다. entity_key는 SQLite의 module 저장 키를 분리하지 않는다.")
+    if event["module"] == "module_integrity":
+        notes.append("module_integrity는 DLL 변화 전용 module이며 external_access 핸들 상태와 별도 저장된다.")
+        if submodule not in (None, "module_integrity"):
+            notes.append("module_integrity 이벤트의 submodule이 예상 계약과 다르므로 관측 범위를 만들지 않는다.")
+            return None
+        submodule = "module_integrity"
+    else:
+        notes.append("external_access는 외부 프로세스 핸들 관측 module이다. 과거 버전의 DLL 하위 채널도 호환 해석한다.")
     if submodule is None and "source_pid" in evidence:
         submodule = "external_process"
         notes.append("submodule이 없는 과거 source_pid 형식은 외부 프로세스 관측 범위로만 해석한다. 원본에 submodule을 추가하지 않는다.")
@@ -121,9 +128,10 @@ def _external_access(event: Mapping[str, Any], notes: list[str]) -> str | None:
     if submodule == "module_integrity":
         notes.append("module_integrity는 PR #78의 DLL 추가·매핑 변경·초기 기준선 감사 채널이다. 핸들 접근 신호가 아니다.")
         notes.append("후속 NORMAL 0점은 새 의심 변화가 없다는 뜻이다. 이전 DLL의 제거·무해함 또는 모든 과거 변화의 해소를 뜻하지 않는다.")
-        notes.append("현재 module-only 최신 상태는 이 하위 채널과 핸들 관측을 서로 덮어쓸 수 있다. 저장 분리·변화 이력은 B와 별도 합의한다.")
+        if event["module"] == "external_access":
+            notes.append("과거 external_access 형식은 핸들 상태와 최신값이 충돌할 수 있다. 신규 생산자는 module_integrity 이름을 사용한다.")
         if event["raw_score"] > 3:
-            notes.append("DLL 변화 채널의 조사 상한은 3점이다. external_access 공통 상한 10만으로 이 하위 채널의 범위를 검증할 수 없다.")
+            notes.append("DLL 변화 채널의 조사 상한은 3점이다. 생산자 버전과 점수 계약을 확인한다.")
         change = evidence.get("change_type")
         if change == "baseline_unreviewed":
             notes.append("초기 미검토 DLL 관측이다. 안티치트 시작 후 새로 주입된 DLL로 해석하지 않는다.")
@@ -264,7 +272,7 @@ def evaluate(event: Mapping[str, Any], baseline: SignalPreview) -> PolicyAnnotat
         notes.append("공통 조사 상한을 벗어난 입력이다. 원점수를 자르지 않고 탐지기 버전·점수 계약을 확인한다.")
     if event["raw_score"] == 0 and evidence.get("status") != "NORMAL" and evidence.get("measurement_valid") is not True:
         notes.append("0점만으로 검사 성공/NORMAL을 추정하지 않는다.")
-    if module == "external_access":
+    if module in ("external_access", "module_integrity"):
         key = _external_access(event, notes)
     elif module == "localguard_yara":
         key = _yara(event, notes)

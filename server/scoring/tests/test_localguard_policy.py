@@ -109,14 +109,19 @@ class LocalGuardPolicyTests(unittest.TestCase):
             self.assert_note(result, "어느 채널인지 임의로 선택하지 않는다")
 
     def test_dll_scope_is_not_handle_scope(self):
-        result = self.analyse(sample(evidence=dll_evidence(source_pid=900)))
+        result = self.analyse(sample("module_integrity", evidence=dll_evidence(source_pid=900)))
         self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
         self.assert_note(result, "핸들 접근 신호가 아니다")
-        self.assert_note(result, "서로 덮어쓸 수 있다")
+        self.assert_note(result, "별도 저장")
+
+    def test_legacy_external_access_dll_event_remains_readable(self):
+        result = self.analyse(sample(evidence=dll_evidence()))
+        self.assertTrue(result.annotations.entity_key.startswith("game_module:500:"))
+        self.assert_note(result, "과거 external_access 형식")
 
     def test_dll_scope_canonicalizes_case_slashes_and_dot_segments(self):
         paths = ["C:/Game/extra.dll", "c:\\GAME\\unused\\..\\EXTRA.DLL", "\\\\?\\C:\\Game\\extra.dll", "\\??\\C:\\Game\\extra.dll"]
-        keys = [self.analyse(sample(evidence=dll_evidence(module_path=p))).annotations.entity_key for p in paths]
+        keys = [self.analyse(sample("module_integrity", evidence=dll_evidence(module_path=p))).annotations.entity_key for p in paths]
         self.assertEqual(len(set(keys)), 1)
 
     def test_unc_dll_paths_canonicalize(self):

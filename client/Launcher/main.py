@@ -43,6 +43,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import game_launcher                                          # noqa: E402
 import registry                                               # noqa: E402
+import self_hook_manifest                                     # noqa: E402
 import ui                                                     # noqa: E402
 from modules import MODULES, REPO                              # noqa: E402
 from process_manager import MISSING, RUNNING, ProcessManager, SKIPPED, is_admin  # noqa: E402
@@ -191,6 +192,31 @@ def publish_game_dir(refresh=False):
     return root
 
 
+def publish_self_hook_manifest(hooks):
+    """Freeze exact hashes of approved observer hooks before detectors start.
+
+    This manifest is intentionally separate from the UE4SS install manifest:
+    observer hooks live under this repository, not under the game install root.
+    Failure is visible but does not silently broaden the exception; the module
+    integrity detector will then treat a later hook load as unreviewed.
+    """
+    try:
+        data = self_hook_manifest.record(hooks)
+    except (OSError, RuntimeError, ValueError) as error:
+        # Do not let a stale manifest from an earlier session silently grant an
+        # exception after this session's explicit selection failed validation.
+        os.environ[self_hook_manifest.ENV_PATH] = str(
+            self_hook_manifest.path_for().with_name("self_hook_manifest.invalid")
+        )
+        ui.line(
+            "  ! 자체 관측 후크 manifest를 만들지 못했습니다: "
+            f"{type(error).__name__}"
+        )
+        return None
+    os.environ[self_hook_manifest.ENV_PATH] = str(self_hook_manifest.path_for())
+    return data
+
+
 def main(argv=None):
     # 런처도 모듈과 같은 약속을 지킨다 — Ctrl+Break 를 받으면 Ctrl+C 처럼 정리하고
     # 끝난다. 나중에 Dashboard 나 배치 스크립트가 런처를 끌 때 쓸 수 있는 문이다.
@@ -212,6 +238,15 @@ def main(argv=None):
                     help="상태 화면을 몇 초마다 그릴지 (기본 10초)")
     ap.add_argument("--overwrite", action="store_true",
                     help="같은 세션 이름의 기존 로그를 지우고 다시 쓴다")
+    ap.add_argument(
+        "--self-hook",
+        type=os.path.abspath,
+        action="append",
+        default=[],
+        metavar="DLL",
+        help=("이번 세션에 실제로 주입할 승인된 관측 후크 경로. "
+              "현재 ac_whistle_v10.dll만 허용하며 반복 지정 가능"),
+    )
     a = ap.parse_args(argv)
 
     session = a.session or ("ac_" + datetime.datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -292,6 +327,13 @@ def main(argv=None):
         found = publish_game_dir(refresh=True)
         if found:
             ui.line(f"      게임 폴더: {found}")
+
+        hook_manifest = publish_self_hook_manifest(a.self_hook)
+        if hook_manifest and hook_manifest.get("hooks"):
+            ui.line(
+                "      안티치트 자체 관측 후크: "
+                f"{len(hook_manifest['hooks'])}개 해시 등록"
+            )
 
         ui.line("  [4/4] 게임 관련 모듈 시작")
         pm.start_group(needs_game=True)

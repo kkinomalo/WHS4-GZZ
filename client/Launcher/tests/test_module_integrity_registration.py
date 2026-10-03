@@ -25,21 +25,24 @@ class _FakeProcess:
 class ModuleIntegrityRegistrationTests(unittest.TestCase):
     def test_registered_command_receives_common_ids_clock_and_exact_pid(self):
         registered = modules.by_name()["module_integrity"]
-        argv = registered.resolved(
-            {
-                "session": "normal_001",
-                "player": "player_042",
-                "t0": "1000.250",
-                "game_pid": 9876,
-            }
-        )
+        with tempfile.TemporaryDirectory() as game_root:
+            argv = registered.resolved(
+                {
+                    "session": "normal_001",
+                    "player": "player_042",
+                    "t0": "1000.250",
+                    "game_pid": 9876,
+                    "game_root": game_root,
+                }
+            )
 
-        self.assertEqual(registered.mode, modules.CONTINUOUS)
-        self.assertIn(
-            "client.LocalGuard.external_access.module_integrity.runner", argv
-        )
-        self.assertEqual(argv[argv.index("--game-pid") + 1], "9876")
-        self.assertEqual(argv[argv.index("--t0") + 1], "1000.250")
+            self.assertEqual(registered.mode, modules.CONTINUOUS)
+            self.assertIn(
+                "client.LocalGuard.external_access.module_integrity.runner", argv
+            )
+            self.assertEqual(argv[argv.index("--game-pid") + 1], "9876")
+            self.assertEqual(argv[argv.index("--t0") + 1], "1000.250")
+            self.assertEqual(argv[argv.index("--game-root") + 1], game_root)
 
     def test_process_manager_passes_discovered_game_pid_to_child(self):
         module = modules.Module(

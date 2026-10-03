@@ -38,8 +38,8 @@ allowlist가 준비된 환경에서는 `--audit-initial-snapshot` 옵션으로 �
 프로세스 생성 시각이 달라지면 게임 재실행으로 보고 이전 기준선을 폐기한다.
 
 Launcher는 이 모듈을 별도 `module_integrity` 프로세스로 실행한다. 공통 이벤트의
-`module`은 scoring에서 사용하는 역할 이름 `external_access`이고, 실제 판별기는
-`evidence.submodule="module_integrity"`로 구분한다.
+`module`도 `module_integrity`를 사용한다. 외부 핸들 채널 `external_access`와 중앙
+최신 상태 키가 분리되며, `evidence.submodule="module_integrity"`도 유지한다.
 
 ## 실행
 
@@ -49,6 +49,7 @@ Launcher는 이 모듈을 별도 `module_integrity` 프로세스로 실행한다
 py -3 -m client.LocalGuard.external_access.module_integrity.runner `
   --game-exe PenguinHotel-Win64-Shipping.exe `
   --game-pid 12345 `
+  --game-root "C:\Program Files (x86)\Steam\steamapps\common\MECCHA CHAMELEON" `
   --session-id normal_001 `
   --player-id player_042 `
   --t0 1790912345.125
@@ -64,6 +65,29 @@ allowlist로 초기 감사를 시험하려면 `--audit-initial-snapshot`을 추�
 PID로 다시 실행해야 한다. 이름만 사용하는 모드는 동명 프로세스가 하나일 때 재실행을
 따라가 새 기준선을 만든다.
 
+런처가 만든 `client/Launcher/logs/ue4ss_install.json`이 있으면 `--game-root`로
+별도 확인한 설치 root와 manifest의 root가 일치하는 경우에만 DLL 항목을 읽는다.
+각 DLL은 정확한 경로·이름·SHA-256이 현재 관측 파일과 모두 일치해야 예외 처리된다.
+manifest 부재·손상·중복 key·경로 탈출·해시 불일치는 예외 없이 탐지 경로로 남는다.
+
+휘파람 탐지기의 `ac_whistle_v10.dll`은 게임 폴더 밖의 안티치트 자체 관측
+후크이므로 UE4SS 목록에 섞지 않는다. Launcher는 게임 관련 모듈을 시작하기 전에
+`--self-hook`으로 명시된 파일을 `client/Launcher/logs/self_hook_manifest.json`에
+별도로 기록한다. 폴더를 자동 검색하지 않으며, 오직 현재 검토된
+`client/detectors/whistle-spoofing/native/whistle_hook/bin/Release/ac_whistle_v10.dll`
+경로만 절대 경로와 SHA-256으로 기록한다. 이 목록도 현재 checkout root,
+역할, 경로, 이름, 해시가 모두 맞아야 예외가 된다. 후크를 새로 빌드한 뒤 이미
+Launcher가 실행 중이면 module_integrity를 재시작하기 전에 아래처럼 명시적으로
+목록을 갱신한다.
+
+```powershell
+py -3 -m client.Launcher.self_hook_manifest --hook `
+  "client/detectors/whistle-spoofing/native/whistle_hook/bin/Release/ac_whistle_v10.dll"
+```
+
+공격 실험용 `modules/whistle-spoofing/bin/whistle_v*.dll`은 승인 경로가 아니므로
+이 목록에 들어가지 않는다.
+
 게임 발견과 첫 기준선 생성만 한 번 확인하려면 `--once`를 추가한다. DLL 로드 전후의
 변화 시험에는 `--once`를 사용하면 안 된다. 기본 간격은 3초, 출력은
 `logs/module_integrity.jsonl`이다. `process_access`와 별도 프로세스로 실행할 때는
@@ -75,7 +99,7 @@ JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파
 {
   "session_id": "esp_001",
   "player_id": "player_042",
-  "module": "external_access",
+  "module": "module_integrity",
   "timestamp_ms": 32500,
   "evidence": {
     "submodule": "module_integrity",
@@ -112,10 +136,13 @@ JSONL writer에 프로세스 간 잠금이 없으므로 서로 다른 출력 파
 - 정확한 allowlist 일치: 이벤트 억제
 - DLL 제거만 관찰: 이벤트 없음
 
-실행 진입점에서는 매 성공 스캔에 `raw_score=0`, `status=NORMAL`을 기록한다.
+실행 진입점에서는 매 성공 스캔에 `raw_score=0`, `status=NORMAL`을 로컬 기록한다.
 게임 프로세스가 없으면 `OFFLINE`, 프로세스 또는 모듈 열거가 실패하면 `ERROR`로
 기록해 정상 표본과 관측 실패를 구분한다. 실제 추가·변경 DLL은 `SUSPICIOUS`다.
 상태값은 최상위 필드를 늘리지 않고 `evidence.status`에 둔다.
+
+중앙에는 양수 DLL 변화만 전송한다. 주기적인 0점 상태는 로컬 JSONL에만 남겨
+한 번 수신된 양수 탐지가 다음 0점 상태로 즉시 덮어써지는 일을 막는다.
 
 로컬 JSONL 기록이 성공한 뒤에만 `send_detection()`을 호출한다. `queued`는 shared
 outbox 저장 성공이며 중앙 receiver의 수신 확인이 아니다. 종료할 때 `flush_client()`와

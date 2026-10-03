@@ -28,9 +28,8 @@ SIGNATURE_WEIGHTS = {
 class ModuleIntegrityDetector:
     """추가·변경 DLL 한 개를 설명 가능한 raw_score로 바꾼다."""
 
-    # Scoring and Launcher use the LocalGuard role name ``external_access``.
-    # The concrete detector remains distinguishable through evidence.submodule.
-    module_name = "external_access"
+    # 중앙 저장 키가 위험 핸들 채널 external_access와 충돌하지 않게 독립 이름을 쓴다.
+    module_name = "module_integrity"
     submodule_name = "module_integrity"
 
     def evaluate(
